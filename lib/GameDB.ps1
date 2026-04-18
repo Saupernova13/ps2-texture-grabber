@@ -70,7 +70,9 @@ function Resolve-PS2Serial {
     param(
         [Parameter(Mandatory=$true)][object[]]$GameDB,
         [Parameter(Mandatory=$true)][string]$Query,
-        [switch]$Interactive
+        [switch]$Interactive,
+        [string]$FlareSolverrUrl = $null,
+        [string]$RepoRoot = $null
     )
 
     # If user pasted a serial directly, accept it.
@@ -123,7 +125,40 @@ function Resolve-PS2Serial {
 
     $ranked = @($scored | Sort-Object -Property Score -Descending)
     if ($ranked.Count -eq 0) {
-        Write-Log "No GameDB match for query: '$Query'" "ERROR"
+        Write-Log "No local GameDB match for '$Query'" "WARN"
+
+        # Wiki fallback — query wiki.pcsx2.net for the serial.
+        if ($FlareSolverrUrl) {
+            try {
+                $wikiLib = Join-Path $PSScriptRoot 'Wiki.ps1'
+                if (Test-Path -LiteralPath $wikiLib) {
+                    . $wikiLib
+                    if (Test-FlareSolverr -FlareSolverrUrl $FlareSolverrUrl) {
+                        Write-Log "[WIKI] Searching wiki.pcsx2.net for '$Query'..." "INFO"
+                        $wikiSerial = Get-WikiSerialForName -FlareSolverrUrl $FlareSolverrUrl -Name $Query -RepoRoot $RepoRoot
+                        if ($wikiSerial) {
+                            $entry = $GameDB | Where-Object { $_.serial -eq $wikiSerial } | Select-Object -First 1
+                            if ($entry) {
+                                Write-Log "[WIKI] Resolved '$Query' -> $wikiSerial (via wiki, confirmed in GameDB)" "SUCCESS"
+                                return $entry
+                            }
+                            # Serial not in local GameDB; synthesize a minimal entry.
+                            Write-Log "[WIKI] Resolved '$Query' -> $wikiSerial (wiki-only, not in local GameDB)" "SUCCESS"
+                            return [PSCustomObject]@{
+                                serial = $wikiSerial
+                                name   = $Query
+                                nameEn = $Query
+                                region = $null
+                            }
+                        }
+                    }
+                }
+            } catch {
+                Write-Log "Wiki serial lookup failed: $($_.Exception.Message)" "WARN"
+            }
+        }
+
+        Write-Log "No match for query: '$Query'" "ERROR"
         return $null
     }
 

@@ -90,9 +90,10 @@ Write-Log "  Textures:     $TexturesPath"  "DEBUG"
 Write-Log "  Gamesettings: $GamesettingsPath" "DEBUG"
 Write-Log "  FlareSolverr: $FlareSolverrUrl"  "DEBUG"
 
-# 1. Resolve name -> serial.
+# 1. Resolve name -> serial. Wiki fallback fires only if local GameDB misses.
 $db = Import-PS2GameDB -GameIndexPath $GameIndexPath -CachePath $cachePath
-$entry = Resolve-PS2Serial -GameDB $db -Query $Query -Interactive:$Interactive
+$entry = Resolve-PS2Serial -GameDB $db -Query $Query -Interactive:$Interactive `
+    -FlareSolverrUrl $FlareSolverrUrl -RepoRoot $RepoRoot
 if (-not $entry) { Write-Log "Could not resolve '$Query' to a PS2 serial" "ERROR"; exit 1 }
 
 $gameName = if ($entry.nameEn) { $entry.nameEn } else { $entry.name }
