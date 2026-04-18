@@ -1,0 +1,16 @@
+# User-local configuration
+.settings
+
+# Runtime data
+data/cache/
+data/jobs/
+data/bin/
+
+# Logs
+*.log
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
