@@ -197,8 +197,12 @@ try {
     $targetRoot = Join-Path $state.texturesPath (Join-Path $state.serial 'replacements')
     $copied = Install-TextureFiles -SourceRoot $textureRoot -TargetRoot $targetRoot
 
-    # 5. Flip INI flags.
-    $crc = Resolve-GameCrc -Serial $state.serial -GamesettingsPath $state.gamesettingsPath
+    # 5. Flip INI flags. Pass FlareSolverr so CRC can be resolved from the wiki
+    # for games never booted in PCSX2.
+    $crc = Resolve-GameCrc -Serial $state.serial `
+        -GamesettingsPath $state.gamesettingsPath `
+        -FlareSolverrUrl $state.flareSolverrUrl `
+        -RepoRoot $script:RepoRoot
     $iniPath = Get-IniPath -Serial $state.serial -Crc $crc -GamesettingsPath $state.gamesettingsPath
     [void](Set-TextureIni -IniPath $iniPath)
     Write-Log "INI at: $iniPath" "INFO" $script:LogFile

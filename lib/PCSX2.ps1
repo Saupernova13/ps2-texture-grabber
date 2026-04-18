@@ -4,14 +4,18 @@
 
 . (Join-Path $PSScriptRoot 'Logging.ps1')
 
-# Resolve the CRC for a serial by looking at existing gamesettings INI files.
-# Returns the CRC string (e.g. "428113C2") or $null if no INI exists yet.
-# When $null, callers should write an unscoped "{SERIAL}.ini" — PCSX2 honours it
-# as a per-serial fallback that applies to all dumps of the game.
+# Resolve the CRC for a serial.
+# Priority:
+#   1. Existing gamesettings/{SERIAL}_*.ini — fastest, no network.
+#   2. Wiki lookup (optional) — handles games the user has never booted.
+#   3. $null → caller writes unscoped "{SERIAL}.ini" (PCSX2 honours it as a
+#      per-serial fallback that applies to all dumps of the game).
 function Resolve-GameCrc {
     param(
         [Parameter(Mandatory=$true)][string]$Serial,
-        [Parameter(Mandatory=$true)][string]$GamesettingsPath
+        [Parameter(Mandatory=$true)][string]$GamesettingsPath,
+        [string]$FlareSolverrUrl = $null,
+        [string]$RepoRoot = $null
     )
     $pattern = Join-Path $GamesettingsPath ("{0}_*.ini" -f $Serial)
     $match = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -21,6 +25,24 @@ function Resolve-GameCrc {
             return $Matches[1].ToUpperInvariant()
         }
     }
+
+    # Wiki fallback.
+    if ($FlareSolverrUrl) {
+        try {
+            $wikiLib = Join-Path $PSScriptRoot 'Wiki.ps1'
+            if (Test-Path -LiteralPath $wikiLib) {
+                . $wikiLib
+                if (Test-FlareSolverr -FlareSolverrUrl $FlareSolverrUrl) {
+                    Write-Log "[WIKI] Looking up CRC for $Serial on wiki.pcsx2.net..." "INFO"
+                    $crc = Get-WikiCrcForSerial -FlareSolverrUrl $FlareSolverrUrl -Serial $Serial -RepoRoot $RepoRoot
+                    if ($crc) { return $crc.ToUpperInvariant() }
+                }
+            }
+        } catch {
+            Write-Log "Wiki CRC lookup failed: $($_.Exception.Message)" "WARN"
+        }
+    }
+
     return $null
 }
 
