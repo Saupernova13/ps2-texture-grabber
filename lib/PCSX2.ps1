@@ -1,0 +1,133 @@
+# lib/PCSX2.ps1
+# PCSX2-specific operations: CRC lookup, INI editing, texture folder install,
+# and enumeration of locally installed texture packs.
+
+. (Join-Path $PSScriptRoot 'Logging.ps1')
+
+# Resolve the CRC for a serial by looking at existing gamesettings INI files.
+# Returns the CRC string (e.g. "428113C2") or $null if no INI exists yet.
+# When $null, callers should write an unscoped "{SERIAL}.ini" — PCSX2 honours it
+# as a per-serial fallback that applies to all dumps of the game.
+function Resolve-GameCrc {
+    param(
+        [Parameter(Mandatory=$true)][string]$Serial,
+        [Parameter(Mandatory=$true)][string]$GamesettingsPath
+    )
+    $pattern = Join-Path $GamesettingsPath ("{0}_*.ini" -f $Serial)
+    $match = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($match) {
+        # Filename format: {SERIAL}_{CRC}.ini
+        if ($match.BaseName -match '^[A-Z]{4}-\d{5}_([0-9A-Fa-f]{8})$') {
+            return $Matches[1].ToUpperInvariant()
+        }
+    }
+    return $null
+}
+
+# Compute the absolute INI path for a {Serial, CRC} pair.
+# CRC may be $null, in which case the unscoped form is used.
+function Get-IniPath {
+    param(
+        [Parameter(Mandatory=$true)][string]$Serial,
+        [string]$Crc,
+        [Parameter(Mandatory=$true)][string]$GamesettingsPath
+    )
+    if ($Crc) {
+        return Join-Path $GamesettingsPath ("{0}_{1}.ini" -f $Serial, $Crc.ToUpperInvariant())
+    }
+    return Join-Path $GamesettingsPath ("{0}.ini" -f $Serial)
+}
+
+# Ensure [EmuCore/GS] contains LoadTextureReplacements=true,
+# LoadTextureReplacementsAsync=true, PrecacheTextureReplacements=true.
+# Preserves all other sections and keys. Idempotent.
+function Set-TextureIni {
+    param(
+        [Parameter(Mandatory=$true)][string]$IniPath
+    )
+
+    $required = @{
+        'LoadTextureReplacements'         = 'true'
+        'LoadTextureReplacementsAsync'    = 'true'
+        'PrecacheTextureReplacements'     = 'true'
+    }
+
+    $lines = @()
+    if (Test-Path -LiteralPath $IniPath) {
+        $lines = Get-Content -LiteralPath $IniPath
+    } else {
+        $dir = Split-Path -Parent $IniPath
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+    }
+
+    # Walk sections, collect section->lines map preserving order.
+    $sectionOrder = New-Object System.Collections.ArrayList
+    $sectionLines = @{}
+    $current = ''
+    [void]$sectionOrder.Add($current)
+    $sectionLines[$current] = New-Object System.Collections.ArrayList
+
+    foreach ($line in $lines) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*$') {
+            $current = $Matches[1]
+            if (-not $sectionLines.ContainsKey($current)) {
+                [void]$sectionOrder.Add($current)
+                $sectionLines[$current] = New-Object System.Collections.ArrayList
+            }
+        } else {
+            [void]$sectionLines[$current].Add($line)
+        }
+    }
+
+    # Ensure [EmuCore/GS] exists.
+    if (-not $sectionLines.ContainsKey('EmuCore/GS')) {
+        [void]$sectionOrder.Add('EmuCore/GS')
+        $sectionLines['EmuCore/GS'] = New-Object System.Collections.ArrayList
+    }
+
+    # In [EmuCore/GS], set each required key. Match "Key = value" with optional whitespace.
+    $gsLines = $sectionLines['EmuCore/GS']
+    foreach ($key in $required.Keys) {
+        $desired = "$key = $($required[$key])"
+        $found = $false
+        for ($i = 0; $i -lt $gsLines.Count; $i++) {
+            if ($gsLines[$i] -match "^\s*$([regex]::Escape($key))\s*=") {
+                $gsLines[$i] = $desired
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            [void]$gsLines.Add($desired)
+        }
+    }
+
+    # Rebuild file content.
+    $out = New-Object System.Collections.ArrayList
+    foreach ($sec in $sectionOrder) {
+        if ($sec -ne '') {
+            if ($out.Count -gt 0 -and $out[$out.Count - 1] -ne '') { [void]$out.Add('') }
+            [void]$out.Add("[$sec]")
+        }
+        foreach ($l in $sectionLines[$sec]) { [void]$out.Add($l) }
+    }
+
+    # Trim trailing blank lines, then add a single trailing newline.
+    while ($out.Count -gt 0 -and $out[$out.Count - 1] -eq '') {
+        $out.RemoveAt($out.Count - 1)
+    }
+
+    $existing = if (Test-Path -LiteralPath $IniPath) { (Get-Content -LiteralPath $IniPath -Raw) } else { $null }
+    $new = ($out -join "`r`n") + "`r`n"
+    if ($existing -eq $new) {
+        Write-Log "INI already configured: $IniPath" "DEBUG"
+        return $false
+    }
+
+    Set-Content -LiteralPath $IniPath -Value $new -NoNewline -Encoding UTF8
+    Write-Log "Wrote texture replacement flags to $IniPath" "SUCCESS"
+    return $true
+}
+
