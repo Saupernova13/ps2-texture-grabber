@@ -1,0 +1,14 @@
+# ps2-texture-grabber configuration
+# Copy this file to `.settings` and edit as needed.
+# Command-line parameters override these values.
+
+# PCSX2 install paths (EmuDeck defaults)
+TexturesPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\textures
+GamesettingsPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\gamesettings
+GameIndexPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\resources\GameIndex.yaml
+
+# FlareSolverr endpoint
+FlareSolverrUrl=http://localhost:8191/v1
+
+# GBAtemp subforum node ID (PCSX2 HD Texture Pack Group)
+GbatempNodeId=549
