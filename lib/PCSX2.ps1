@@ -131,3 +131,58 @@ function Set-TextureIni {
     return $true
 }
 
+# Enumerate locally installed texture packs for -List.
+# Walks subfolders of $TexturesPath (each a serial ID), resolves the game name
+# via GameDB, counts PNGs, and reports whether the matching INI enables textures.
+function Get-InstalledTexturePacks {
+    param(
+        [Parameter(Mandatory=$true)][string]$TexturesPath,
+        [Parameter(Mandatory=$true)][string]$GamesettingsPath,
+        [Parameter(Mandatory=$true)][object[]]$GameDB
+    )
+
+    if (-not (Test-Path -LiteralPath $TexturesPath)) {
+        Write-Log "Textures path not found: $TexturesPath" "ERROR"
+        return @()
+    }
+
+    $folders = Get-ChildItem -Path $TexturesPath -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^[A-Z]{4}-\d{5}$' }
+
+    $results = foreach ($f in $folders) {
+        $serial = $f.Name
+        $gameName = Get-GameNameBySerial -GameDB $GameDB -Serial $serial
+        if (-not $gameName) { $gameName = "(unknown: $serial)" }
+
+        $replacements = Join-Path $f.FullName 'replacements'
+        $pngCount = 0
+        $size = 0
+        if (Test-Path -LiteralPath $replacements) {
+            $pngs = Get-ChildItem -Path $replacements -Filter *.png -Recurse -File -ErrorAction SilentlyContinue
+            $pngCount = @($pngs).Count
+            if ($pngCount -gt 0) {
+                $size = ($pngs | Measure-Object -Property Length -Sum).Sum
+            }
+        }
+
+        $iniConfigured = $false
+        $iniFiles = Get-ChildItem -Path (Join-Path $GamesettingsPath "$serial*.ini") -File -ErrorAction SilentlyContinue
+        foreach ($ini in $iniFiles) {
+            $content = Get-Content -LiteralPath $ini.FullName -Raw
+            if ($content -match '(?m)^\s*LoadTextureReplacements\s*=\s*true') {
+                $iniConfigured = $true
+                break
+            }
+        }
+
+        [PSCustomObject]@{
+            Serial        = $serial
+            GameName      = $gameName
+            TextureCount  = $pngCount
+            SizeMB        = [Math]::Round(($size / 1MB), 2)
+            IniConfigured = $iniConfigured
+        }
+    }
+
+    return ,@($results | Sort-Object GameName)
+}
