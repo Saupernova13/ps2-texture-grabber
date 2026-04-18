@@ -21,7 +21,9 @@ function Get-DispatcherForHost {
 function Invoke-DirectDownload {
     param(
         [Parameter(Mandatory=$true)][string]$Url,
-        [Parameter(Mandatory=$true)][string]$OutFile
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [scriptblock]$ProgressCallback = $null,
+        [string]$HostName = 'HTTP'
     )
     Write-Log "Direct HTTP download: $Url" "INFO"
     $dir = Split-Path -Parent $OutFile
@@ -30,13 +32,42 @@ function Invoke-DirectDownload {
     # archive.org /details/ links need a browser redirect to /download/; normalise.
     $final = $Url
     if ($Url -match '^https?://archive\.org/details/(.+)$') {
-        # Archive.org detail pages expose a file listing; prefer the /download/ path.
         $final = "https://archive.org/download/" + $Matches[1]
         Write-Log "  Archive details->download: $final" "DEBUG"
     }
 
+    # Stream with HttpWebRequest so we can report byte progress to the worker.
     try {
-        Invoke-WebRequest -Uri $final -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+        $req = [System.Net.HttpWebRequest]::Create($final)
+        $req.AllowAutoRedirect = $true
+        $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ps2-texture-grabber/1.0'
+        $req.Timeout = 60000
+        $req.ReadWriteTimeout = 120000
+        $resp = $req.GetResponse()
+        $total = [long]$resp.ContentLength
+        $src = $resp.GetResponseStream()
+        $dst = [System.IO.File]::Open($OutFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        try {
+            $buf = New-Object byte[] 81920
+            $read = 0; $last = [Environment]::TickCount; $lastPct = -1
+            while (($n = $src.Read($buf, 0, $buf.Length)) -gt 0) {
+                $dst.Write($buf, 0, $n)
+                $read += $n
+                if ($total -gt 0 -and $ProgressCallback) {
+                    $pct = [int](($read * 100) / $total)
+                    $now = [Environment]::TickCount
+                    if ($pct -ne $lastPct -and ($now - $last) -ge 1000) {
+                        try { & $ProgressCallback $read $total $pct $HostName } catch {}
+                        $last = $now; $lastPct = $pct
+                    }
+                }
+            }
+            if ($ProgressCallback -and $total -gt 0) {
+                try { & $ProgressCallback $read $total 100 $HostName } catch {}
+            }
+        } finally {
+            $dst.Close(); $src.Close(); $resp.Close()
+        }
     } catch {
         throw "Direct download failed for $final : $($_.Exception.Message)"
     }
@@ -178,17 +209,26 @@ function Invoke-YandexDownload {
 }
 
 # Try each link in order until one succeeds. Returns the host that served the file.
+# Optional $ProgressCallback: invoked as `& cb bytesDownloaded totalBytes pct hostName`
+# whenever bytes flow. Only Invoke-DirectDownload currently reports progress; other
+# dispatchers finish atomically from the caller's point of view.
 function Invoke-HostDownload {
     param(
         [Parameter(Mandatory=$true)][object[]]$Links,
-        [Parameter(Mandatory=$true)][string]$OutFile
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [scriptblock]$ProgressCallback = $null
     )
     $errors = New-Object System.Collections.ArrayList
     foreach ($link in $Links) {
         $dispatcher = Get-DispatcherForHost -HostName $link.Host
         try {
             Write-Log "Trying $($link.Host): $($link.Url)" "INFO"
-            & $dispatcher -Url $link.Url -OutFile $OutFile
+            if ($dispatcher -eq 'Invoke-DirectDownload') {
+                & $dispatcher -Url $link.Url -OutFile $OutFile `
+                    -ProgressCallback $ProgressCallback -HostName $link.Host
+            } else {
+                & $dispatcher -Url $link.Url -OutFile $OutFile
+            }
             Write-Log "Download succeeded via $($link.Host)" "SUCCESS"
             return $link.Host
         } catch {

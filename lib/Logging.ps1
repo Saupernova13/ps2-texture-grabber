@@ -5,10 +5,12 @@ function Write-Log {
     param(
         [string]$Message,
         [string]$Level = "INFO",
-        [string]$LogFile = $null
+        [string]$LogFile = $null,
+        [string]$Step = $null
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $line = "[$timestamp] [$Level] $Message"
+    $stepTag = if ($Step) { "[$Step] " } else { "" }
+    $line = "[$timestamp] [$Level] $stepTag$Message"
     $color = switch ($Level) {
         "INFO"    { "Cyan" }
         "SUCCESS" { "Green" }

@@ -18,6 +18,7 @@ $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 . (Join-Path $RepoRoot 'lib\Logging.ps1')
 . (Join-Path $RepoRoot 'lib\PCSX2.ps1')
 . (Join-Path $RepoRoot 'lib\Hosts.ps1')
+. (Join-Path $RepoRoot 'lib\Jobs.ps1')
 
 function Save-JobState {
     param([hashtable]$State, [string]$Path)
@@ -132,7 +133,7 @@ Write-Log "Serial: $($state.serial)" "INFO" $script:LogFile
 
 $state.status = 'running'
 $state.startedAt = (Get-Date).ToString('o')
-Save-JobState -State $state -Path $JobFile
+Update-JobProgress -State $state -JobFile $JobFile -Step 'pending' -Progress 0 -Message 'Worker starting'
 
 try {
     $jobDir = Join-Path (Split-Path -Parent $JobFile) $state.id
@@ -155,8 +156,24 @@ try {
         }
     }
 
-    $servedBy = Invoke-HostDownload -Links $linkObjects -OutFile $archivePath
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'downloading' -Progress 0 `
+        -Message "Trying $($linkObjects.Count) download link(s)"
+
+    # Progress callback invoked by Invoke-DirectDownload during streaming.
+    $script:ProgressCallback = {
+        param($bytes, $total, $pct, $hostName)
+        Update-JobProgress -State $state -JobFile $JobFile `
+            -Step 'downloading' -Progress $pct `
+            -BytesDownloaded $bytes -TotalBytes $total `
+            -CurrentLink $hostName `
+            -Message "$hostName : $pct% of $([Math]::Round($total / 1MB, 1)) MB"
+    }.GetNewClosure()
+
+    $servedBy = Invoke-HostDownload -Links $linkObjects -OutFile $archivePath `
+        -ProgressCallback $script:ProgressCallback
     $state.servedBy = $servedBy
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'downloading' -Progress 100 `
+        -CurrentLink $servedBy -Message "Download complete via $servedBy"
 
     # Rename archive to actual extension when discoverable.
     $resolved = Get-Item -LiteralPath $archivePath
@@ -186,19 +203,28 @@ try {
     }
 
     # 2. Extract.
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'extracting' -Progress 0 `
+        -Message 'Extracting archive'
     $extractDir = Join-Path $jobDir 'extracted'
     Extract-Archive -ArchivePath $archivePath -OutDir $extractDir
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'extracting' -Progress 100
 
     # 3. Find texture root within extracted tree.
     $textureRoot = Find-TextureRoot -ExtractedDir $extractDir
     Write-Log "Texture source root: $textureRoot" "INFO" $script:LogFile
 
     # 4. Install into textures/{SERIAL}/replacements/.
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'installing' -Progress 0 `
+        -Message "Copying to $($state.texturesPath)"
     $targetRoot = Join-Path $state.texturesPath (Join-Path $state.serial 'replacements')
     $copied = Install-TextureFiles -SourceRoot $textureRoot -TargetRoot $targetRoot
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'installing' -Progress 100 `
+        -Message "Copied $copied texture file(s)"
 
     # 5. Flip INI flags. Pass FlareSolverr so CRC can be resolved from the wiki
     # for games never booted in PCSX2.
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'configuring' -Progress 0 `
+        -Message 'Resolving CRC and writing INI'
     $crc = Resolve-GameCrc -Serial $state.serial `
         -GamesettingsPath $state.gamesettingsPath `
         -FlareSolverrUrl $state.flareSolverrUrl `
@@ -209,15 +235,15 @@ try {
 
     $state.status = 'complete'
     $state.completedAt = (Get-Date).ToString('o')
-    $state.message = "Installed $copied texture file(s) for $($state.serial) via $servedBy"
-    Save-JobState -State $state -Path $JobFile
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'complete' -Progress 100 `
+        -Message "Installed $copied texture file(s) for $($state.serial) via $servedBy"
     Write-Log "=== Job complete ===" "SUCCESS" $script:LogFile
 
 } catch {
     $state.status = 'failed'
     $state.completedAt = (Get-Date).ToString('o')
-    $state.message = $_.Exception.Message
-    Save-JobState -State $state -Path $JobFile
+    Update-JobProgress -State $state -JobFile $JobFile -Step 'failed' `
+        -Message $_.Exception.Message
     Write-Log "=== Job failed: $($_.Exception.Message) ===" "ERROR" $script:LogFile
     Write-Log $_.ScriptStackTrace "DEBUG" $script:LogFile
     exit 1
