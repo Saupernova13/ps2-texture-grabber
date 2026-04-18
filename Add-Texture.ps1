@@ -12,6 +12,7 @@ param(
     [Parameter(Mandatory=$false)][switch]$List,
     [Parameter(Mandatory=$false)][string]$Status,
     [Parameter(Mandatory=$false)][switch]$Interactive,
+    [Parameter(Mandatory=$false)][switch]$Json,
     [Parameter(Mandatory=$false)][string]$TexturesPath,
     [Parameter(Mandatory=$false)][string]$GamesettingsPath,
     [Parameter(Mandatory=$false)][string]$GameIndexPath,
@@ -46,7 +47,11 @@ $cachePath = Join-Path $RepoRoot 'data\cache\gamedb.json'
 # ---------- -Status ----------
 if ($Status) {
     . (Join-Path $RepoRoot 'lib\Jobs.ps1')
-    [void](Get-JobStatus -RepoRoot $RepoRoot -JobId $Status)
+    if ($Json) {
+        Write-JobStatusJson -RepoRoot $RepoRoot -JobId $Status
+    } else {
+        [void](Get-JobStatus -RepoRoot $RepoRoot -JobId $Status)
+    }
     return
 }
 
@@ -58,6 +63,11 @@ if ($List) {
     Write-Log "Scanning installed texture packs at $TexturesPath" "INFO"
     $db = Import-PS2GameDB -GameIndexPath $GameIndexPath -CachePath $cachePath
     $packs = Get-InstalledTexturePacks -TexturesPath $TexturesPath -GamesettingsPath $GamesettingsPath -GameDB $db
+
+    if ($Json) {
+        @($packs) | ConvertTo-Json -Depth 3
+        return
+    }
 
     if (-not $packs -or $packs.Count -eq 0) {
         Write-Log "No texture packs found under $TexturesPath" "WARN"

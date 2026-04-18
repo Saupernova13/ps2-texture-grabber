@@ -91,6 +91,21 @@ function Start-DownloadJob {
     }
 }
 
+# Emit the raw job state as JSON to stdout. For AI agents / scripts that want
+# to poll without regex-parsing the human-readable status output.
+function Write-JobStatusJson {
+    param(
+        [Parameter(Mandatory=$true)][string]$RepoRoot,
+        [Parameter(Mandatory=$true)][string]$JobId
+    )
+    $jobFile = Join-Path $RepoRoot "data\jobs\$JobId.json"
+    if (-not (Test-Path -LiteralPath $jobFile)) {
+        @{ error = "Unknown job: $JobId"; jobId = $JobId } | ConvertTo-Json
+        return
+    }
+    Get-Content -LiteralPath $jobFile -Raw
+}
+
 function Get-JobStatus {
     param(
         [Parameter(Mandatory=$true)][string]$RepoRoot,
