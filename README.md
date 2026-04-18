@@ -38,8 +38,10 @@ Interactive mode lets you disambiguate multiple regional matches:
 - **FlareSolverr** running locally on `http://localhost:8191` — bypasses GBAtemp's
   Cloudflare challenge. The script will prompt you to install it on first run if
   it isn't reachable. See <https://github.com/FlareSolverr/FlareSolverr>.
-- **MEGAcmd** (`winget install MEGA.MEGAcmd`) — required for MEGA-hosted packs
-  (~50% of threads).
+- **MEGAcmd** — required for MEGA-hosted packs (~50% of threads). No winget
+  package exists; install from the official MEGA site:
+  - <https://mega.io/cmd> — direct Windows installer (`MEGAcmdSetup64.exe`)
+  - <https://github.com/meganz/MEGAcmd/releases> — GitHub mirror
 - **7-Zip** (`winget install 7zip.7zip`) — required to extract `.7z` / `.rar`
   archives. `.zip` works without it.
 
@@ -53,7 +55,30 @@ Copy `.settings.example` to `.settings` and edit any defaults you want to overri
 Reads the serial IDs present as subfolders of your `textures/` directory, looks
 each one up in PCSX2's bundled `GameIndex.yaml`, and prints the game names along
 with PNG count, on-disk size, and whether the matching `gamesettings` INI has
-texture replacement enabled. No network access.
+texture replacement enabled. The scan is live — every invocation walks the
+folder, so the row count reflects exactly how many packs are installed at that
+moment. No network access.
+
+Add `-Json` for machine-readable output:
+
+```powershell
+.\Add-Texture.ps1 -List -Json | ConvertFrom-Json
+```
+
+## Dynamic resolution
+
+Name→serial and serial→CRC lookups use a two-tier strategy:
+
+1. **Local first** — PCSX2's `GameIndex.yaml` for names, and existing
+   `gamesettings/{SERIAL}_*.ini` for CRCs. Fast, no network.
+2. **wiki.pcsx2.net fallback** — if the local source comes up empty (unknown
+   title, or game never booted in PCSX2 so no INI exists), the script queries
+   [wiki.pcsx2.net](https://wiki.pcsx2.net/) via the MediaWiki opensearch API
+   and parses the per-region infobox for serials/CRCs. Results are cached under
+   `data/cache/wiki/` for 7 days. Wiki-sourced results are tagged `[WIKI]` in
+   the log output.
+
+The wiki fallback requires FlareSolverr to be reachable.
 
 ## Background jobs
 
@@ -62,3 +87,36 @@ Download jobs run as a hidden, detached `powershell.exe` process launched via
 invoking shell — closing the parent window, AI agent timeout, or session end will
 not stop the download. Per-job state is written to `data/jobs/<jobId>.json` and
 logs to `data/jobs/<jobId>.log`.
+
+### Checking progress
+
+Poll job status at any time:
+
+```powershell
+# Human-readable summary with progress bar and log tail
+.\Add-Texture.ps1 -Status <jobId>
+
+# JSON for scripts / AI agents
+.\Add-Texture.ps1 -Status <jobId> -Json
+```
+
+The JSON job-state shape:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Job identifier |
+| `status` | string | `pending` \| `running` \| `complete` \| `failed` |
+| `step` | string | `pending` \| `downloading` \| `extracting` \| `installing` \| `configuring` \| `complete` \| `failed` |
+| `progress` | int (0–100) | Percentage through the current step |
+| `bytesDownloaded` | long | Bytes received so far (downloading step) |
+| `totalBytes` | long | Total archive size when known |
+| `currentLink` | string | Host currently being tried (MEGA, MediaFire, etc.) |
+| `servedBy` | string | Host that ultimately delivered the file |
+| `lastUpdate` | ISO-8601 | Timestamp of the most recent state change |
+| `message` | string | Human-readable status message |
+| `query`, `serial`, `gameName` | string | Identifying metadata |
+| `threadUrl`, `downloadLinks` | | Input context |
+| `createdAt`, `startedAt`, `completedAt` | ISO-8601 | Lifecycle timestamps |
+
+Progress writes are throttled to ~1-second intervals during downloads, so you
+can safely poll every few seconds without thrashing disk.
