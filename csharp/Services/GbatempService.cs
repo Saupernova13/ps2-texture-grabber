@@ -1,4 +1,5 @@
-using System.Net;
+﻿using System.Net;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ps2TextureGrabber.Models;
 
@@ -7,15 +8,10 @@ namespace Ps2TextureGrabber.Services;
 /// <summary>
 /// Browses the GBAtemp PCSX2 HD Texture Pack subforum via FlareSolverr,
 /// scores thread titles against a serial/game-name query, and extracts
-/// download links from the winning thread's opening post.
-///
-/// All per-page state is held in plain local variables — no collection
-/// wrapping tricks, no scoping surprises.
+/// download links from the winning thread.
 /// </summary>
 public sealed partial class GbatempService
 {
-    // Ordered list of (host-name, compiled-regex) pairs.
-    // Ordering matters: MEGA first since it's the most common host.
     private static readonly (string Name, Regex Pattern)[] HostPatterns =
     [
         ("MEGA",      MegaRx()),
@@ -23,14 +19,12 @@ public sealed partial class GbatempService
         ("GDrive",    GDriveRx()),
         ("MediaFire", MediaFireRx()),
         ("Yandex",    YandexRx()),
-        ("GitHub",    GitHubRx()),
+        ("GitHub",    GitHubReleasesRx()),
     ];
 
-    // Single shared HttpClient for redirect-following (short links, etc.)
-    // AllowAutoRedirect follows up to 10 hops transparently.
-    private static readonly HttpClient _httpRedirect = new(
+    private static readonly HttpClient _http = new(
         new HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 10 })
-    { Timeout = TimeSpan.FromSeconds(15) };
+    { Timeout = TimeSpan.FromSeconds(20) };
 
     private readonly FlareSolverrClient _flare;
     private readonly Logger             _log;
@@ -44,10 +38,6 @@ public sealed partial class GbatempService
     // -------------------------------------------------------------------------
     // Forum search
 
-    /// <summary>
-    /// Browse up to <paramref name="maxPages"/> pages of the subforum index and
-    /// return the highest-scoring thread, or null if nothing scores above zero.
-    /// </summary>
     public async Task<ForumThread?> FindThreadAsync(
         string  serial,
         string? gameName,
@@ -55,13 +45,8 @@ public sealed partial class GbatempService
         int     maxPages = 10,
         CancellationToken ct = default)
     {
-        var sessionId = await _flare.CreateSessionAsync().ConfigureAwait(false);
-
-        // allThreads: deduplicated across pages, keyed by ThreadId (string).
-        // Using Dictionary<string,ForumThread> — no ArrayList, no ,$trick,
-        // no PowerShell collection-wrapping ambiguity.
+        var sessionId  = await _flare.CreateSessionAsync().ConfigureAwait(false);
         var allThreads = new Dictionary<string, ForumThread>(capacity: 400);
-
         ForumThread? bestResult = null;
         int          bestScore  = 0;
 
@@ -78,57 +63,27 @@ public sealed partial class GbatempService
                 _log.Info($"Browsing GBAtemp forum page {page}...");
 
                 FlareSolverrClient.PageResult resp;
-                try
-                {
-                    resp = await _flare.GetPageAsync(pageUrl, sessionId).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"  Page {page} fetch failed: {ex.Message}");
-                    continue;
-                }
+                try { resp = await _flare.GetPageAsync(pageUrl, sessionId).ConfigureAwait(false); }
+                catch (Exception ex) { _log.Warn($"  Page {page} fetch failed: {ex.Message}"); continue; }
 
-                // Parse into a plain List<ForumThread> — explicit type, no wrapping.
                 List<ForumThread> pageThreads = ParseThreadsFromHtml(resp.Html);
-                _log.Debug(
-                    $"  Page {page} html={resp.Html.Length} " +
-                    $"threads={pageThreads.Count} " +
-                    $"allSoFar={allThreads.Count}");
+                _log.Debug($"  Page {page} html={resp.Html.Length} threads={pageThreads.Count} allSoFar={allThreads.Count}");
 
-                if (pageThreads.Count == 0)
-                {
-                    _log.Debug($"  Page {page} returned no thread links — stopping");
-                    break;
-                }
+                if (pageThreads.Count == 0) { _log.Debug($"  Page {page} returned no thread links — stopping"); break; }
 
-                // Deduplicate into allThreads.
-                foreach (var t in pageThreads)
-                    allThreads.TryAdd(t.ThreadId, t);
-
+                foreach (var t in pageThreads) allThreads.TryAdd(t.ThreadId, t);
                 _log.Debug($"  Page {page} allThreads after add: {allThreads.Count}");
 
-                // Score this page's threads.
                 foreach (var t in pageThreads)
                 {
                     int score = ScoreThread(t, serial, gameName);
-                    if (score > bestScore)
-                    {
-                        bestScore  = score;
-                        bestResult = t;
-                    }
+                    if (score > bestScore) { bestScore = score; bestResult = t; }
                 }
 
-                if (bestScore >= 50)
-                {
-                    _log.Debug($"  Strong match found on page {page} — stopping early");
-                    break;
-                }
+                if (bestScore >= 50) { _log.Debug($"  Strong match found on page {page} — stopping early"); break; }
             }
         }
-        finally
-        {
-            await _flare.DestroySessionAsync(sessionId).ConfigureAwait(false);
-        }
+        finally { await _flare.DestroySessionAsync(sessionId).ConfigureAwait(false); }
 
         if (bestResult is not null && bestScore > 0)
         {
@@ -140,82 +95,53 @@ public sealed partial class GbatempService
         return null;
     }
 
-    // -------------------------------------------------------------------------
-    // Thread scoring  (pure function, no I/O)
-
     private static int ScoreThread(ForumThread t, string serial, string? gameName)
     {
         int score = 0;
-
-        if (!string.IsNullOrEmpty(serial)
-            && t.Title.Contains(serial, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrEmpty(serial) && t.Title.Contains(serial, StringComparison.OrdinalIgnoreCase))
             score += 100;
-
         if (!string.IsNullOrEmpty(gameName))
         {
-            var tokens    = NormalizeText(gameName)
-                            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                            .Where(tok => tok.Length >= 2);
-            var titleLow  = t.Title.ToLowerInvariant();
+            var tokens   = NormalizeText(gameName).Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tok => tok.Length >= 2);
+            var titleLow = t.Title.ToLowerInvariant();
             foreach (var tok in tokens)
-                if (titleLow.Contains(tok, StringComparison.Ordinal))
-                    score += 10;
+                if (titleLow.Contains(tok, StringComparison.Ordinal)) score += 10;
         }
-
-        if (NoiseTitleRx().IsMatch(t.Title))  score -= 50;
+        if (NoiseTitleRx().IsMatch(t.Title))   score -= 50;
         if (QualityTitleRx().IsMatch(t.Title)) score += 20;
-
         return score;
     }
 
-    // -------------------------------------------------------------------------
-    // HTML parsing
-
-    /// <summary>
-    /// Parse XenForo thread-listing HTML into a <see cref="List{T}"/>.
-    /// Pattern: href="/threads/{slug}.{id}/"...>Title&lt;/a&gt;
-    /// Returns an empty list (never null) when nothing matches.
-    /// </summary>
     private static List<ForumThread> ParseThreadsFromHtml(string html)
     {
         var seen    = new HashSet<string>(StringComparer.Ordinal);
         var threads = new List<ForumThread>();
-
         foreach (Match m in ThreadLinkRx().Matches(html))
         {
             var id = m.Groups[2].Value;
-            if (!seen.Add(id)) continue;   // skip duplicates
-
+            if (!seen.Add(id)) continue;
             var title = WebUtility.HtmlDecode(m.Groups[3].Value.Trim());
-            if (string.IsNullOrWhiteSpace(title)
-                || PaginationTitleRx().IsMatch(title))
-                continue;
-
-            threads.Add(new ForumThread(
-                ThreadId: id,
-                Slug:     m.Groups[1].Value,
-                Title:    title,
-                Url:      $"https://gbatemp.net/threads/{m.Groups[1].Value}.{id}/"));
+            if (string.IsNullOrWhiteSpace(title) || PaginationTitleRx().IsMatch(title)) continue;
+            threads.Add(new ForumThread(id, m.Groups[1].Value, title,
+                $"https://gbatemp.net/threads/{m.Groups[1].Value}.{id}/"));
         }
-
         return threads;
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Download link extraction
+    //
+    // Strategy (newest post first; stops when any post yields links):
+    //
+    //   2a. Direct known-host URL patterns (MEGA, Archive, GDrive, MediaFire,
+    //       Yandex, GitHub /releases/download/ direct assets).
+    //   2b. GitHub REPO ROOT links (github.com/owner/repo) -> GitHub REST API
+    //       for latest release -> assets + release body external links ->
+    //       README fallback.
+    //   2c. Unknown / short hrefs in the post -> HTTP redirect-chain resolve
+    //       -> re-classify against known hosts.
+    // =========================================================================
 
-    /// <summary>
-    /// Fetch a thread page and return all external download links found in the
-    /// opening post's bbWrapper div, ordered by host priority.
-    ///
-    /// Extra steps beyond the naive pass:
-    ///  1. Scan all external hrefs in the OP for short/unknown links and follow
-    ///     HTTP redirect chains to classify the resolved final URL.
-    ///  2. For matched GitHub release-page URLs (not direct asset files), fetch
-    ///     the page via FlareSolverr and extract .zip/.7z/.rar asset links.
-    ///  3. If STILL no links, save the OP HTML to disk so a human or AI agent
-    ///     can inspect it, and print the path prominently.
-    /// </summary>
     public async Task<List<DownloadLink>> GetDownloadLinksAsync(
         string            threadUrl,
         ForumThread?      thread   = null,
@@ -227,209 +153,217 @@ public sealed partial class GbatempService
         var resp = await _flare.GetPageAsync(threadUrl).ConfigureAwait(false);
         var html = resp.Html;
 
-        // Isolate the first post's bbWrapper.  Fall back to full page if:
-        //  - no match at all, OR
-        //  - the match is suspiciously short (< 300 chars) which means we
-        //    captured a sidebar/description widget rather than the actual post.
-        var postMatch      = FirstPostRx().Match(html);
-        var capturedOp     = postMatch.Success ? postMatch.Groups[1].Value : "";
-        var searchArea     = capturedOp.Length >= 300 ? capturedOp : html;
-        if (capturedOp.Length == 0)
-            _log.Warn("Could not isolate first post; scanning full page");
-        else if (capturedOp.Length < 300)
-            _log.Warn($"First-post bbWrapper too short ({capturedOp.Length} chars) — likely a widget; falling back to full-page scan");
+        var postBodies = AllPostBodiesRx()
+            .Matches(html)
+            .Select(m => m.Groups[1].Value)
+            .Where(b => b.Length >= 50)
+            .Reverse()   // newest post first
+            .ToList();
+
+        if (postBodies.Count == 0)
+        {
+            _log.Warn("Could not extract post bodies; scanning full page as fallback");
+            postBodies.Add(html);
+        }
+        else _log.Debug($"  Found {postBodies.Count} post(s) (scanning newest first)");
 
         var seen  = new HashSet<string>(StringComparer.Ordinal);
         var links = new List<DownloadLink>();
 
-        // --- Pass 1: known-host direct patterns --------------------------------
-        foreach (var (hostName, pattern) in HostPatterns)
-        {
-            foreach (Match hit in pattern.Matches(searchArea))
-            {
-                var url = hit.Value.TrimEnd('.', ',', ')', ']', '"', '\'');
-                if (seen.Add(url))
-                    links.Add(new DownloadLink(hostName, url));
-            }
-        }
-
-        // --- Pass 2: follow GitHub release pages → extract direct asset URLs ---
-        var githubPageLinks = links
-            .Where(l => l.Host == "GitHub" && !GitHubDirectAssetRx().IsMatch(l.Url))
-            .ToList();
-
-        foreach (var gl in githubPageLinks)
-        {
-            _log.Debug($"  Following GitHub release page: {gl.Url}");
-            var assetLinks = await FollowGitHubReleasePageAsync(gl.Url, ct).ConfigureAwait(false);
-            foreach (var al in assetLinks)
-                if (seen.Add(al.Url))
-                    links.Add(al);
-        }
-
-        // --- Pass 3: resolve short / unknown hrefs via HTTP redirect chain -----
-        var allHrefs = AllExternalHrefRx().Matches(searchArea)
-            .Select(m => WebUtility.HtmlDecode(m.Groups[1].Value.Trim()))
-            .Where(u => u.StartsWith("http", StringComparison.Ordinal))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        // Only bother with hrefs we haven't already classified.
-        var unclassified = allHrefs
-            .Where(u => !HostPatterns.Any(hp => hp.Pattern.IsMatch(u)))
-            .ToList();
-
-        if (unclassified.Count > 0)
-            _log.Debug($"  Found {unclassified.Count} unclassified href(s) — resolving redirects...");
-
-        foreach (var rawUrl in unclassified)
+        foreach (var body in postBodies)
         {
             ct.ThrowIfCancellationRequested();
-            var resolved = await ResolveRedirectAsync(rawUrl, ct).ConfigureAwait(false);
-            if (resolved is null) continue;
 
-            _log.Debug($"  Resolved {rawUrl}  →  {resolved}");
-
-            // Try to classify the resolved URL.
+            // 2a — direct known-host patterns
             foreach (var (hostName, pattern) in HostPatterns)
-            {
-                var m = pattern.Match(resolved);
-                if (!m.Success) continue;
-                var url = m.Value.TrimEnd('.', ',', ')', ']', '"', '\'');
-                if (seen.Add(url))
+                foreach (Match hit in pattern.Matches(body))
                 {
-                    _log.Debug($"    Classified as {hostName}");
-                    links.Add(new DownloadLink(hostName, url));
+                    var url = hit.Value.TrimEnd('.', ',', ')', ']', '"', '\'');
+                    if (seen.Add(url)) links.Add(new DownloadLink(hostName, url));
                 }
-                break;
+
+            // 2b — GitHub repo root -> latest release via API
+            foreach (Match m in GitHubRepoRootRx().Matches(body))
+            {
+                var repoUrl   = m.Value.TrimEnd('.', ',', ')', ']', '"', '\'', '/');
+                var repoMatch = GitHubOwnerRepoRx().Match(repoUrl);
+                if (!repoMatch.Success) continue;
+                var owner    = repoMatch.Groups[1].Value;
+                var repo     = repoMatch.Groups[2].Value;
+                var cacheKey = $"gh:{owner}/{repo}";
+                if (!seen.Add(cacheKey)) continue;
+                _log.Debug($"  GitHub repo found — querying latest release: {owner}/{repo}");
+                foreach (var rl in await ExpandGitHubRepoAsync(owner, repo, ct).ConfigureAwait(false))
+                    if (seen.Add(rl.Url)) links.Add(rl);
             }
+
+            // 2c — short / unknown hrefs: follow redirects, re-classify
+            var postHrefs = AllExternalHrefRx().Matches(body)
+                .Select(m => WebUtility.HtmlDecode(m.Groups[1].Value.Trim()))
+                .Where(u => u.StartsWith("http", StringComparison.Ordinal))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(u => !HostPatterns.Any(hp => hp.Pattern.IsMatch(u)) && !GitHubRepoRootRx().IsMatch(u))
+                .ToList();
+
+            if (postHrefs.Count > 0) _log.Debug($"  {postHrefs.Count} unclassified href(s) in post — resolving...");
+
+            foreach (var rawUrl in postHrefs)
+            {
+                ct.ThrowIfCancellationRequested();
+                var resolved = await ResolveRedirectAsync(rawUrl, ct).ConfigureAwait(false);
+                if (resolved is null || resolved == rawUrl) continue;
+                _log.Debug($"  Short-link: {rawUrl} -> {resolved}");
+                foreach (var (hostName, pattern) in HostPatterns)
+                {
+                    var hm = pattern.Match(resolved);
+                    if (!hm.Success) continue;
+                    var url = hm.Value.TrimEnd('.', ',', ')', ']', '"', '\'');
+                    if (seen.Add(url)) { _log.Debug($"    Classified as {hostName}"); links.Add(new DownloadLink(hostName, url)); }
+                    break;
+                }
+            }
+
+            if (links.Count > 0) break;  // stop at newest post with links
         }
 
-        // --- Result reporting --------------------------------------------------
         if (links.Count == 0)
         {
-            _log.Warn("No download links found in OP");
-            // Dump the FULL thread HTML so a human/AI agent gets the whole picture,
-            // not just the (possibly wrong) OP extract.
+            _log.Warn("No download links found in any post");
             DumpMissingLinksHtml(threadUrl, thread, html);
         }
-        else
-        {
-            _log.Success(
-                $"Found {links.Count} download link(s): "
-                + string.Join(", ", links.Select(l => l.Host)));
-        }
+        else _log.Success($"Found {links.Count} download link(s): " + string.Join(", ", links.Select(l => l.Host)));
 
         return links;
     }
 
     // -------------------------------------------------------------------------
-    // Short-link / redirect resolution
+    // GitHub repo -> latest release expansion (API-based, no Cloudflare needed)
 
-    /// <summary>
-    /// Follow HTTP redirects (up to 10 hops) and return the final URL, or null
-    /// if the request times out or throws.  Does NOT use FlareSolverr — this is
-    /// a plain HTTP HEAD request that relies on the server returning Location
-    /// headers, which shortener services always do.
-    /// </summary>
-    private async Task<string?> ResolveRedirectAsync(string url, CancellationToken ct)
-    {
-        try
-        {
-            // HEAD first (cheap); fall back to GET if the server rejects HEAD.
-            var req = new HttpRequestMessage(HttpMethod.Head, url);
-            req.Headers.UserAgent.ParseAdd(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-            var resp = await _httpRedirect.SendAsync(req, ct).ConfigureAwait(false);
-
-            // Some servers (Cloudflare-protected) return 403/405 for HEAD.
-            if (!resp.IsSuccessStatusCode &&
-                (int)resp.StatusCode is 403 or 405 or 503)
-            {
-                var get = new HttpRequestMessage(HttpMethod.Get, url);
-                get.Headers.UserAgent.ParseAdd(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-                resp = await _httpRedirect.SendAsync(
-                    get,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    ct).ConfigureAwait(false);
-            }
-
-            return resp.RequestMessage?.RequestUri?.ToString() ?? url;
-        }
-        catch (Exception ex)
-        {
-            _log.Debug($"  Redirect resolve failed for {url}: {ex.Message}");
-            return null;
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // GitHub release page → direct asset links
-
-    /// <summary>
-    /// Fetch a GitHub releases page via FlareSolverr and extract direct-download
-    /// asset URLs (.zip, .7z, .rar).  GitHub serves these without Cloudflare but
-    /// we reuse FlareSolverr for consistency and session reuse.
-    /// </summary>
-    private async Task<List<DownloadLink>> FollowGitHubReleasePageAsync(
-        string releaseUrl, CancellationToken ct)
+    private async Task<List<DownloadLink>> ExpandGitHubRepoAsync(
+        string owner, string repo, CancellationToken ct)
     {
         var result = new List<DownloadLink>();
+
         try
         {
-            var resp = await _flare.GetPageAsync(releaseUrl).ConfigureAwait(false);
-            foreach (Match m in GitHubDirectAssetRx().Matches(resp.Html))
+            var req = new HttpRequestMessage(HttpMethod.Get,
+                $"https://api.github.com/repos/{owner}/{repo}/releases/latest");
+            req.Headers.UserAgent.ParseAdd("ps2tex/1.0");
+            req.Headers.Accept.ParseAdd("application/vnd.github+json");
+            var apiResp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+
+            if (apiResp.IsSuccessStatusCode)
             {
-                var url = "https://github.com" + m.Groups[1].Value;
-                url = WebUtility.HtmlDecode(url);
-                result.Add(new DownloadLink("GitHub", url));
-                _log.Debug($"    GitHub asset: {url}");
+                using var doc  = JsonDocument.Parse(await apiResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+                var       root = doc.RootElement;
+
+                if (root.TryGetProperty("html_url", out var pageUrl))
+                    _log.Debug($"    Latest release: {pageUrl.GetString()}");
+
+                // 1. Direct release assets
+                if (root.TryGetProperty("assets", out var assets))
+                    foreach (var asset in assets.EnumerateArray())
+                    {
+                        var name  = asset.GetProperty("name").GetString() ?? "";
+                        var dlUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        var ext   = Path.GetExtension(name).ToLowerInvariant();
+                        if (ext is ".zip" or ".7z" or ".rar" && !string.IsNullOrEmpty(dlUrl))
+                        {
+                            _log.Debug($"    Release asset: {name}");
+                            result.Add(new DownloadLink("GitHub", dlUrl));
+                        }
+                    }
+
+                // 2. Release body — scan for external host links
+                if (root.TryGetProperty("body", out var bodyEl))
+                {
+                    var body = bodyEl.GetString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(body))
+                    {
+                        _log.Debug($"    Scanning release body for external links...");
+                        result.AddRange(ScanTextForHostLinks(body, "release body"));
+                    }
+                }
             }
-            if (result.Count == 0)
-                _log.Warn($"  No direct GitHub assets found on: {releaseUrl}");
+            else _log.Warn($"  GitHub API {(int)apiResp.StatusCode} for {owner}/{repo}");
         }
-        catch (Exception ex)
+        catch (Exception ex) { _log.Warn($"  GitHub API error for {owner}/{repo}: {ex.Message}"); }
+
+        // 3. README fallback
+        if (result.Count == 0)
         {
-            _log.Warn($"  Could not fetch GitHub release page: {ex.Message}");
+            _log.Debug($"    No links from release — checking README...");
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get,
+                    $"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md");
+                req.Headers.UserAgent.ParseAdd("ps2tex/1.0");
+                var r = await _http.SendAsync(req, ct).ConfigureAwait(false);
+                if (r.IsSuccessStatusCode)
+                    result.AddRange(ScanTextForHostLinks(
+                        await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false), "README"));
+            }
+            catch (Exception ex) { _log.Debug($"    README fetch failed: {ex.Message}"); }
         }
+
+        return result;
+    }
+
+    private List<DownloadLink> ScanTextForHostLinks(string text, string source)
+    {
+        var result = new List<DownloadLink>();
+        var seen   = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (hostName, pattern) in HostPatterns)
+            foreach (Match m in pattern.Matches(text))
+            {
+                var url = m.Value.TrimEnd('.', ',', ')', ']', '"', '\'');
+                if (seen.Add(url)) { _log.Debug($"    [{source}] {hostName}: {url}"); result.Add(new DownloadLink(hostName, url)); }
+            }
         return result;
     }
 
     // -------------------------------------------------------------------------
-    // HTML dump for AI triage
+    // Short-link redirect resolution
 
-    /// <summary>
-    /// When no download links can be extracted, save the OP HTML to disk so an
-    /// AI agent (or a human) can inspect it and update the parsing logic.
-    /// </summary>
-    private void DumpMissingLinksHtml(string threadUrl, ForumThread? thread, string opHtml)
+    private async Task<string?> ResolveRedirectAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            var req  = new HttpRequestMessage(HttpMethod.Head, url);
+            req.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode && (int)resp.StatusCode is 403 or 405 or 503)
+            {
+                var get = new HttpRequestMessage(HttpMethod.Get, url);
+                get.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+                resp = await _http.SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            }
+            return resp.RequestMessage?.RequestUri?.ToString() ?? url;
+        }
+        catch (Exception ex) { _log.Debug($"  Redirect resolve failed for {url}: {ex.Message}"); return null; }
+    }
+
+    // -------------------------------------------------------------------------
+    // HTML dump for manual / AI triage
+
+    private void DumpMissingLinksHtml(string threadUrl, ForumThread? thread, string fullHtml)
     {
         try
         {
             Directory.CreateDirectory(AppPaths.MissingLinksDir);
-
-            // Use thread slug if available, otherwise sanitize the URL.
-            var slug = thread?.Slug
-                ?? Regex.Replace(threadUrl, @"[^\w\-]", "_").TrimEnd('_');
-            // Trim very long names.
+            var slug = thread?.Slug ?? Regex.Replace(threadUrl, @"[^\w\-]", "_").TrimEnd('_');
             if (slug.Length > 80) slug = slug[..80];
-
             var dumpPath = Path.Combine(AppPaths.MissingLinksDir, $"{slug}.html");
-            File.WriteAllText(dumpPath, opHtml, System.Text.Encoding.UTF8);
-
+            File.WriteAllText(dumpPath, fullHtml, System.Text.Encoding.UTF8);
             _log.Warn(
                 "========================================================\n" +
-                "  DOWNLOAD LINKS NOT FOUND — OP HTML saved for triage:\n" +
+                "  DOWNLOAD LINKS NOT FOUND - full thread HTML saved:\n" +
                 $"  {dumpPath}\n" +
-                "  An AI agent can open this file and determine the correct\n" +
-                "  link pattern to add to GbatempService.cs.\n" +
+                "  Open this file, find the download link, then add a\n" +
+                "  matching regex to GbatempService HostPatterns.\n" +
                 "========================================================");
         }
-        catch (Exception ex)
-        {
-            _log.Warn($"  Could not write missing-links dump: {ex.Message}");
-        }
+        catch (Exception ex) { _log.Warn($"  Could not write missing-links dump: {ex.Message}"); }
     }
 
     // -------------------------------------------------------------------------
@@ -440,57 +374,51 @@ public sealed partial class GbatempService
 
     // ---- compiled regexes ----
 
-    // XenForo thread links: href="/threads/{slug}.{id}/" ... >Title</a>
     [GeneratedRegex("""href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/"\s[^>]*>([^<]+)</a>""")]
     private static partial Regex ThreadLinkRx();
 
-    // Pagination / member-profile noise titles
     [GeneratedRegex(@"^(Page \d+|#\d+|Last)$", RegexOptions.IgnoreCase)]
     private static partial Regex PaginationTitleRx();
 
-    // First post bbWrapper (Singleline so . matches newlines)
-    [GeneratedRegex(
-        """<div class="bbWrapper">(.*?)</div>\s*(?:<(?:div|aside|footer))""",
-        RegexOptions.Singleline)]
-    private static partial Regex FirstPostRx();
+    // All post bodies in a thread page — each match.Groups[1] is one post.
+    [GeneratedRegex("""<div\s+class="bbWrapper">(.*?)</div>\s*(?=<(?:div|aside|footer|article))""", RegexOptions.Singleline)]
+    private static partial Regex AllPostBodiesRx();
 
-    // Thread title quality signals
-    [GeneratedRegex(
-        @"\b(request|dump|help|wanted|looking\s+for|need|question)\b",
-        RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(request|dump|help|wanted|looking\s+for|need|question)\b", RegexOptions.IgnoreCase)]
     private static partial Regex NoiseTitleRx();
 
-    [GeneratedRegex(
-        @"\b(hd|upscaled|texture|remaster|pack|replacement|4k|2k)\b",
-        RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(hd|upscaled|texture|remaster|pack|replacement|4k|2k)\b", RegexOptions.IgnoreCase)]
     private static partial Regex QualityTitleRx();
 
-    // Download-link patterns (one per supported host)
     [GeneratedRegex(@"https?://mega\.nz/(?:file|folder)/[A-Za-z0-9#!_\-]+")]
     private static partial Regex MegaRx();
 
     [GeneratedRegex(@"https?://archive\.org/(?:details|download)/[^\s""'<>]+")]
     private static partial Regex ArchiveRx();
 
-    [GeneratedRegex(@"https?://(?:drive|docs)\.google\.com/(?:file/d/|open\?id=|uc\?[^""' <>]*id=)[A-Za-z0-9_\-]+")]
+    [GeneratedRegex(@"https?://(?:drive|docs)\.google\.com/(?:file/d/|open\?id=|uc\?[^""'<>\s]*id=)[A-Za-z0-9_\-]+")]
     private static partial Regex GDriveRx();
 
-    [GeneratedRegex(@"https?://(?:www\.)?mediafire\.com/(?:file|folder)/[A-Za-z0-9_\-/?&=.]+")]
+    // MediaFire — URL-encoded filenames contain %28 %29 etc.
+    [GeneratedRegex(@"https?://(?:www\.)?mediafire\.com/(?:file|folder)/[A-Za-z0-9_\-/?&=.%+]+")]
     private static partial Regex MediaFireRx();
 
     [GeneratedRegex(@"https?://disk\.yandex\.(?:ru|com)/d/[A-Za-z0-9_\-]+")]
     private static partial Regex YandexRx();
 
-    [GeneratedRegex(@"https?://github\.com/[^/\s""'<>]+/[^/\s""'<>]+/releases/[^\s""'<>]+")]
-    private static partial Regex GitHubRx();
+    // GitHub direct release asset download (already-resolved /releases/download/ URL)
+    [GeneratedRegex(@"https?://github\.com/[^/\s""'<>]+/[^/\s""'<>]+/releases/download/[^\s""'<>]+")]
+    private static partial Regex GitHubReleasesRx();
 
-    // Direct GitHub release asset: href="/owner/repo/releases/download/tag/file.ext"
-    [GeneratedRegex(
-        """href="(/[^"]+/releases/download/[^"]+\.(?:zip|7z|rar|tar\.gz))" """,
-        RegexOptions.IgnoreCase)]
-    private static partial Regex GitHubDirectAssetRx();
+    // GitHub repo ROOT — matches github.com/owner/repo with optional trailing path
+    [GeneratedRegex(@"https?://github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)(?:/(?:tree|blob)/[^\s""'<>]*|\.git|/?)?(?=[\s""'<>.]|$)")]
+    private static partial Regex GitHubRepoRootRx();
 
-    // All external href values from HTML — used to catch shorteners and unknowns.
+    // Extract owner/repo from any github.com URL
+    [GeneratedRegex(@"github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)")]
+    private static partial Regex GitHubOwnerRepoRx();
+
+    // All external hrefs within a post body
     [GeneratedRegex("""href=["'](https?://[^"'<>\s]+)["']""", RegexOptions.IgnoreCase)]
     private static partial Regex AllExternalHrefRx();
 }

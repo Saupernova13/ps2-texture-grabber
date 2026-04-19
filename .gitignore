@@ -9,6 +9,11 @@ data/bin/
 # Logs
 *.log
 
+# C# build artifacts (keep bin/publish)
+csharp/bin/Debug/
+csharp/bin/Release/
+csharp/obj/
+
 # OS / editor
 Thumbs.db
 desktop.ini
