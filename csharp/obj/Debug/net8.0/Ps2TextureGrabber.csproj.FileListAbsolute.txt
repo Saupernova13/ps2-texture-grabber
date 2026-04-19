@@ -1,0 +1,14 @@
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\Ps2TextureGrabber.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\Ps2TextureGrabber.AssemblyInfoInputs.cache
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\Ps2TextureGrabber.AssemblyInfo.cs
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\Ps2TextureGrabber.csproj.CoreCompileInputs.cache
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\bin\Debug\net8.0\ps2tex.exe
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\bin\Debug\net8.0\ps2tex.deps.json
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\bin\Debug\net8.0\ps2tex.runtimeconfig.json
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\bin\Debug\net8.0\ps2tex.dll
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\bin\Debug\net8.0\ps2tex.pdb
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\ps2tex.dll
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\refint\ps2tex.dll
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\ps2tex.pdb
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\Ps2TextureGrabber.genruntimeconfig.cache
+C:\Users\RaaViVi\Documents\GitHub\ps2-texture-grabber\csharp\obj\Debug\net8.0\ref\ps2tex.dll

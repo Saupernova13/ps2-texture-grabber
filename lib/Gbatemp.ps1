@@ -17,60 +17,110 @@ $script:HostPatterns = @(
     @{ Name = 'GitHub';     Regex = 'https?://github\.com/[^/\s"''<>]+/[^/\s"''<>]+/releases/[^\s"''<>]+' }
 )
 
-# Search the subforum for threads relevant to a serial / game name. Serial is tried
-# first (unambiguous, present in many thread titles); falls back to the name.
+# Browse the subforum index pages and score thread titles against the query.
+# GBAtemp's /search/ endpoint is unreliable (DB overload from browser-level asset
+# requests). Browsing the forum listing pages is cheaper and more reliable.
+# A persistent FlareSolverr session is used so Cloudflare cookies are shared
+# across page fetches, making pages 2+ load much faster.
+#
 # Returns the best-scored thread {Title, Url, ThreadId, Slug} or $null.
 function Find-TextureThread {
     param(
         [Parameter(Mandatory=$true)][string]$FlareSolverrUrl,
         [Parameter(Mandatory=$true)][string]$Serial,
         [string]$GameName = $null,
-        [int]$NodeId = 549
+        [int]$NodeId = 549,
+        [int]$MaxPages = 10
     )
 
-    $queries = @($Serial)
-    if ($GameName) { $queries += $GameName }
+    $session = New-FlareSolverrSession -FlareSolverrUrl $FlareSolverrUrl
+    $allThreads = @{}  # keyed by ThreadId to de-dup across pages
+    $bestResult = $null
+    $bestScore  = 0
 
-    foreach ($q in $queries) {
-        Write-Log "Searching GBAtemp for '$q' in node $NodeId..." "INFO"
-        $encoded = [System.Web.HttpUtility]::UrlEncode($q)
-        # XenForo search across post content (not title-only) within node 549.
-        # c[child_nodes]=1 includes sub-nodes; t=post finds threads even when
-        # the game name only appears in the post body, not the thread title.
-        $searchUrl = "https://gbatemp.net/search/?q=$encoded&t=post&c[child_nodes]=1&c[nodes][0]=$NodeId&o=relevance"
-        $resp = Invoke-FlareRequest -FlareSolverrUrl $FlareSolverrUrl -Url $searchUrl
-        $threads = Get-ThreadsFromHtml -Html $resp.Html
+    try {
+        for ($page = 1; $page -le $MaxPages; $page++) {
+            $pageUrl = if ($page -eq 1) {
+                "https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.$NodeId/"
+            } else {
+                "https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.$NodeId/page-$page"
+            }
 
-        if ($threads.Count -eq 0) {
-            Write-Log "  No matches for '$q'" "DEBUG"
-            continue
-        }
+            Write-Log "Browsing GBAtemp forum page $page..." "INFO"
+            try {
+                $resp = Invoke-FlareRequest -FlareSolverrUrl $FlareSolverrUrl -Url $pageUrl -SessionId $session
+            } catch {
+                Write-Log "  Page $page fetch failed: $($_.Exception.Message)" "WARN"
+                continue
+            }
 
-        $scored = foreach ($t in $threads) {
-            $s = 0
-            $title = $t.Title
-            if ($title -match [regex]::Escape($Serial)) { $s += 100 }
-            if ($GameName) {
-                $gameTokens = ($GameName.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -split '\s+'
-                $titleLower = $title.ToLowerInvariant()
-                foreach ($tok in $gameTokens) {
-                    if ($tok.Length -ge 2 -and $titleLower.Contains($tok)) { $s += 10 }
+            $pageThreads = Get-ThreadsFromHtml -Html $resp.Html
+            Write-Log "  Page $page html=$($resp.Html.Length) threads=$($pageThreads.Count) allSoFar=$($allThreads.Count)" "DEBUG"
+            if ($pageThreads.Count -eq 0) {
+                Write-Log "  Page $page returned no thread links — stopping" "DEBUG"
+                break
+            }
+
+            foreach ($t in $pageThreads) {
+                if (-not $allThreads.ContainsKey($t.ThreadId)) {
+                    $allThreads[$t.ThreadId] = $t
                 }
             }
-            if ($title -match '(?i)\b(request|dump|help|wanted|looking for|need)\b') { $s -= 50 }
-            if ($title -match '(?i)\b(hd|upscaled|texture|remaster|pack|replacement)\b') { $s += 20 }
-            [PSCustomObject]@{ Thread = $t; Score = $s }
-        }
+            Write-Log "  Page $page allThreads after add: $($allThreads.Count)" "DEBUG"
 
-        $best = $scored | Sort-Object -Property Score -Descending | Select-Object -First 1
-        if ($best -and $best.Score -gt 0) {
-            Write-Log "  Selected: $($best.Thread.Title) (score $($best.Score))" "SUCCESS"
-            return $best.Thread
+            # Score this page's threads.
+            foreach ($t in $pageThreads) {
+                $s = Score-Thread -Thread $t -Serial $Serial -GameName $GameName
+                if ($s -gt $bestScore) {
+                    $bestScore  = $s
+                    $bestResult = $t
+                }
+            }
+
+            # If we already have a strong match, no need to browse more pages.
+            if ($bestScore -ge 50) {
+                Write-Log "  Strong match found on page $page — stopping early" "DEBUG"
+                break
+            }
+        }
+    } finally {
+        if ($session) { Remove-FlareSolverrSession -FlareSolverrUrl $FlareSolverrUrl -SessionId $session }
+    }
+
+    if ($bestResult -and $bestScore -gt 0) {
+        Write-Log "Selected thread: $($bestResult.Title) (score $bestScore)" "SUCCESS"
+        return $bestResult
+    }
+
+    Write-Log "No matching thread found in $($allThreads.Count) forum entries scanned" "WARN"
+    return $null
+}
+
+# Score a thread against a serial and game name. Pure function, no side effects.
+function Score-Thread {
+    param(
+        [Parameter(Mandatory=$true)][object]$Thread,
+        [string]$Serial,
+        [string]$GameName
+    )
+    $s = 0
+    $title = $Thread.Title
+
+    if ($Serial -and $title -match [regex]::Escape($Serial)) { $s += 100 }
+
+    if ($GameName) {
+        $gameTokens = ($GameName.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim() -split '\s+' |
+            Where-Object { $_.Length -ge 2 }
+        $titleLower = $title.ToLowerInvariant()
+        foreach ($tok in $gameTokens) {
+            if ($titleLower.Contains($tok)) { $s += 10 }
         }
     }
 
-    Write-Log "No matching threads found on GBAtemp" "WARN"
-    return $null
+    if ($title -match '(?i)\b(request|dump|help|wanted|looking for|need|question)\b') { $s -= 50 }
+    if ($title -match '(?i)\b(hd|upscaled|texture|remaster|pack|replacement|4k|2k)\b') { $s += 20 }
+
+    return $s
 }
 
 function Get-ThreadsFromHtml {

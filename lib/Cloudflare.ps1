@@ -70,3 +70,36 @@ function Invoke-FlareRequest {
         StatusCode = $resp.solution.status
     }
 }
+
+# Create a named FlareSolverr browser session. Returns the session ID or $null on failure.
+# Sessions persist Cloudflare cookies across requests, making subsequent page loads
+# much lighter (no challenge re-solve, fewer parallel connections to the target host).
+function New-FlareSolverrSession {
+    param(
+        [Parameter(Mandatory=$true)][string]$FlareSolverrUrl,
+        [string]$SessionId = $null
+    )
+    if (-not $SessionId) { $SessionId = "ps2tex-$([Guid]::NewGuid().ToString('N').Substring(0,8))" }
+    try {
+        $body = (@{ cmd = 'sessions.create'; session = $SessionId } | ConvertTo-Json -Compress)
+        $r = Invoke-RestMethod -Uri $FlareSolverrUrl -Method POST -ContentType 'application/json' `
+            -Body $body -TimeoutSec 30 -ErrorAction Stop
+        if ($r.status -eq 'ok') { return $SessionId }
+    } catch {
+        Write-Log "Could not create FlareSolverr session: $($_.Exception.Message)" "WARN"
+    }
+    return $null
+}
+
+# Destroy a named FlareSolverr session (best-effort, never throws).
+function Remove-FlareSolverrSession {
+    param(
+        [Parameter(Mandatory=$true)][string]$FlareSolverrUrl,
+        [Parameter(Mandatory=$true)][string]$SessionId
+    )
+    try {
+        $body = (@{ cmd = 'sessions.destroy'; session = $SessionId } | ConvertTo-Json -Compress)
+        Invoke-RestMethod -Uri $FlareSolverrUrl -Method POST -ContentType 'application/json' `
+            -Body $body -TimeoutSec 15 -ErrorAction Stop | Out-Null
+    } catch {}
+}
