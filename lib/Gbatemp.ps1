@@ -34,8 +34,10 @@ function Find-TextureThread {
     foreach ($q in $queries) {
         Write-Log "Searching GBAtemp for '$q' in node $NodeId..." "INFO"
         $encoded = [System.Web.HttpUtility]::UrlEncode($q)
-        # XenForo search: title-only within a specific node, threads only.
-        $searchUrl = "https://gbatemp.net/search/?q=$encoded&c[title_only]=1&c[nodes][0]=$NodeId&o=relevance"
+        # XenForo search across post content (not title-only) within node 549.
+        # c[child_nodes]=1 includes sub-nodes; t=post finds threads even when
+        # the game name only appears in the post body, not the thread title.
+        $searchUrl = "https://gbatemp.net/search/?q=$encoded&t=post&c[child_nodes]=1&c[nodes][0]=$NodeId&o=relevance"
         $resp = Invoke-FlareRequest -FlareSolverrUrl $FlareSolverrUrl -Url $searchUrl
         $threads = Get-ThreadsFromHtml -Html $resp.Html
 
