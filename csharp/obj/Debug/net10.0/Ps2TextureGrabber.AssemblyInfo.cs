@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ps2tex")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+80b9c268a887754c6fdbc55bc72b7f039b51a8c7")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+888c78ea6b29b533dc41a79339473d6f926e73f4")]
 [assembly: System.Reflection.AssemblyProductAttribute("ps2tex")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ps2tex")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

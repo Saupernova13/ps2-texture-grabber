@@ -227,11 +227,17 @@ public sealed partial class GbatempService
         var resp = await _flare.GetPageAsync(threadUrl).ConfigureAwait(false);
         var html = resp.Html;
 
-        // Isolate the first post's bbWrapper.  Fall back to full page if not found.
-        var postMatch  = FirstPostRx().Match(html);
-        var searchArea = postMatch.Success ? postMatch.Groups[1].Value : html;
-        if (!postMatch.Success)
+        // Isolate the first post's bbWrapper.  Fall back to full page if:
+        //  - no match at all, OR
+        //  - the match is suspiciously short (< 300 chars) which means we
+        //    captured a sidebar/description widget rather than the actual post.
+        var postMatch      = FirstPostRx().Match(html);
+        var capturedOp     = postMatch.Success ? postMatch.Groups[1].Value : "";
+        var searchArea     = capturedOp.Length >= 300 ? capturedOp : html;
+        if (capturedOp.Length == 0)
             _log.Warn("Could not isolate first post; scanning full page");
+        else if (capturedOp.Length < 300)
+            _log.Warn($"First-post bbWrapper too short ({capturedOp.Length} chars) — likely a widget; falling back to full-page scan");
 
         var seen  = new HashSet<string>(StringComparer.Ordinal);
         var links = new List<DownloadLink>();
@@ -303,7 +309,9 @@ public sealed partial class GbatempService
         if (links.Count == 0)
         {
             _log.Warn("No download links found in OP");
-            DumpMissingLinksHtml(threadUrl, thread, searchArea);
+            // Dump the FULL thread HTML so a human/AI agent gets the whole picture,
+            // not just the (possibly wrong) OP extract.
+            DumpMissingLinksHtml(threadUrl, thread, html);
         }
         else
         {

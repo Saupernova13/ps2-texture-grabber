@@ -146,7 +146,15 @@ public sealed partial class GameDbService
                 "NTSC-J" => 10,
                 _        => 0
             };
-            scored.Add((e, nameScore + regionBonus));
+
+            // Penalise trial/demo/preview/kiosk/sample versions heavily so the
+            // commercial release always wins over a trial with the same name.
+            // Check both Name and NameEn — the marker may appear in either.
+            bool isDemo = (e.Name   is not null && DemoTitleRx().IsMatch(e.Name))
+                       || (e.NameEn is not null && DemoTitleRx().IsMatch(e.NameEn));
+            int demopenalty = isDemo ? -500 : 0;
+
+            scored.Add((e, nameScore + regionBonus + demopenalty));
         }
 
         if (scored.Count == 0) return null;
@@ -207,4 +215,8 @@ public sealed partial class GameDbService
 
     [GeneratedRegex(@"^[A-Z]{4}-\d{5}$")]
     private static partial Regex SerialFormatRx();
+
+    // Matches trial, demo, preview, sample, kiosk in any bracketing (case-insensitive)
+    [GeneratedRegex(@"\b(trial|demo|preview|sample|kiosk)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex DemoTitleRx();
 }
