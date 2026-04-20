@@ -65,8 +65,8 @@ public sealed class JobService
             UseShellExecute        = false,
             WindowStyle            = ProcessWindowStyle.Hidden,
             // Redirect stdio so the worker does not inherit the parent console
-            // handles — otherwise ps2tex.cmd stays attached to the background
-            // worker and the terminal appears to hang.
+            // handles — otherwise the cmd launcher (~\.openclaw\dlps2tex.cmd)
+            // stays attached to the background worker and the terminal hangs.
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
