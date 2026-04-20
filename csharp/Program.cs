@@ -166,23 +166,34 @@ var gameName = entry.DisplayName;
 // 2. Initialise Playwright browser (solves Cloudflare challenges natively)
 await using var fetcher = new PlaywrightFetcher(log);
 
-// 3. Find thread
-var gbatemp = new GbatempService(fetcher, log);
-var thread  = await gbatemp.FindThreadAsync(entry.Serial, gameName, nodeId, userQuery: cli.Query);
-if (thread is null)
+// 3. Find thread candidates (search-first, score-ordered)
+var gbatemp    = new GbatempService(fetcher, log);
+var candidates = await gbatemp.FindThreadCandidatesAsync(entry.Serial, gameName, nodeId, userQuery: cli.Query);
+if (candidates.Count == 0)
 {
     log.Error($"No matching thread for {entry.Serial} '{gameName}'");
     log.Info($"Browse manually: https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/");
     return 1;
 }
 
-// 4. Extract download links
-var links = await gbatemp.GetDownloadLinksAsync(thread.Url, thread);
+// 4. Extract download links — try each candidate in score order
+List<DownloadLink> links       = [];
+ForumThread?       winnerThread = null;
+foreach (var candidate in candidates)
+{
+    links = await gbatemp.GetDownloadLinksAsync(candidate.Url, candidate);
+    if (links.Count > 0) { winnerThread = candidate; break; }
+    if (candidate != candidates[^1])
+        log.Info($"No links in \"{candidate.Title}\" — trying next candidate...");
+}
+
 if (links.Count == 0)
 {
-    log.Error($"No usable download links found in thread: {thread.Url}");
+    log.Error("No usable download links found in any candidate thread");
     return 1;
 }
+
+var thread = winnerThread!;
 
 // 5. Spawn job
 var jobState = new JobState

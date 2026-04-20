@@ -36,9 +36,14 @@ public sealed partial class GbatempService
     }
 
     // -------------------------------------------------------------------------
-    // Forum browse (no search form — pages the forum listing directly)
+    // Thread discovery: search-first, forum-listing fallback, multi-candidate
 
-    public async Task<ForumThread?> FindThreadAsync(
+    /// <summary>
+    /// Returns all candidate threads sorted by score (desc). All returned
+    /// threads score within 10 points of the best match so the caller can
+    /// try each in order when the top thread has no download links.
+    /// </summary>
+    public async Task<List<ForumThread>> FindThreadCandidatesAsync(
         string  serial,
         string? gameName,
         int     nodeId    = 549,
@@ -53,13 +58,106 @@ public sealed partial class GbatempService
         if (string.IsNullOrWhiteSpace(keywords))
         {
             _log.Warn("No search keywords available");
-            return null;
+            return [];
         }
 
+        // 1. Try GBAtemp search endpoint first
+        var threads = await SearchGbatempAsync(keywords, nodeId, ct).ConfigureAwait(false);
+
+        // 2. Fall back to forum listing pagination if search yielded nothing
+        if (threads.Count == 0)
+            threads = await BrowseForumListingAsync(serial, gameName, keywords, nodeId, maxPages, ct).ConfigureAwait(false);
+
+        if (threads.Count == 0)
+        {
+            _log.Warn("No matching threads found");
+            return [];
+        }
+
+        // 3. Score, log, and return candidates within 10 points of best
+        var scored = threads
+            .Select(t => (Thread: t, Score: ScoreThread(t, serial, gameName)))
+            .OrderByDescending(x => x.Score)
+            .ToList();
+
+        foreach (var (t, score) in scored)
+            _log.Debug($"    score={score,4} {t.Title}");
+
+        int bestScore = scored[0].Score;
+        var candidates = scored
+            .Where(x => x.Score >= bestScore - 10)
+            .Select(x => x.Thread)
+            .ToList();
+
+        _log.Success($"Selected thread: \"{candidates[0].Title}\" (score {bestScore})");
+        if (candidates.Count > 1)
+            _log.Info($"  {candidates.Count - 1} fallback candidate(s) within 10 pts");
+
+        return candidates;
+    }
+
+    // -------------------------------------------------------------------------
+    // GBAtemp XenForo search (mimics "Search titles only / This forum")
+
+    private async Task<List<ForumThread>> SearchGbatempAsync(
+        string keywords, int nodeId, CancellationToken ct)
+    {
+        var encoded = Uri.EscapeDataString(keywords);
+        var url = $"https://gbatemp.net/search/?q={encoded}&t=thread&c%5Bnode%5D={nodeId}&o=relevance";
+
+        _log.Info($"Searching GBAtemp for: {keywords}");
+        _log.Debug($"  Search URL: {url}");
+
+        try
+        {
+            var result = await _flare.GetPageAsync(url, maxTimeoutMs: 60_000).ConfigureAwait(false);
+            var threads = ParseSearchResultThreads(result.Html);
+            _log.Debug($"  Search returned {threads.Count} result(s)");
+            return threads;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"  GBAtemp search failed: {ex.Message} — falling back to forum listing");
+            return [];
+        }
+    }
+
+    private static List<ForumThread> ParseSearchResultThreads(string html)
+    {
+        var results = new List<ForumThread>();
+        var seen    = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (Match m in SearchResultThreadRx().Matches(html))
+        {
+            var slug  = m.Groups[1].Value;
+            var id    = m.Groups[2].Value;
+            if (!seen.Add(id)) continue;
+
+            var raw   = m.Groups[3].Value;
+            var title = WebUtility.HtmlDecode(StripHtmlTagsRx().Replace(raw, string.Empty)).Trim();
+            if (string.IsNullOrWhiteSpace(title)) continue;
+
+            results.Add(new ForumThread(id, slug, title, $"https://gbatemp.net/threads/{slug}.{id}/"));
+        }
+
+        return results;
+    }
+
+    // -------------------------------------------------------------------------
+    // Forum listing pagination (fallback when search returns nothing)
+
+    private async Task<List<ForumThread>> BrowseForumListingAsync(
+        string  serial,
+        string? gameName,
+        string  keywords,
+        int     nodeId,
+        int     maxPages,
+        CancellationToken ct)
+    {
         _log.Info($"Browsing GBAtemp forum (node {nodeId}) for: {keywords}");
 
-        ForumThread? best      = null;
-        int          bestScore = int.MinValue;
+        var all       = new List<ForumThread>();
+        int bestScore = int.MinValue;
 
         for (int page = 1; page <= maxPages; page++)
         {
@@ -80,19 +178,18 @@ public sealed partial class GbatempService
 
             if (threads.Count == 0) break;
 
+            all.AddRange(threads);
+
             foreach (var t in threads)
             {
                 int score = ScoreThread(t, serial, gameName);
-                _log.Debug($"    score={score,4} {t.Title}");
-                if (score > bestScore) { bestScore = score; best = t; }
+                if (score > bestScore) bestScore = score;
             }
 
-            if (best is not null && bestScore >= 60) break;
+            if (bestScore >= 60) break;
         }
 
-        if (best is null) { _log.Warn("No matching thread found in forum listing"); return null; }
-        _log.Success($"Selected thread: \"{best.Title}\" (score {bestScore})");
-        return best;
+        return all;
     }
 
     private static List<ForumThread> ParseForumListingThreads(string html)
@@ -394,6 +491,10 @@ public sealed partial class GbatempService
     // Thread links in a XenForo forum listing page (structItem-title).
     [GeneratedRegex("""class="[^"]*structItem-title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*<a\s+href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/[^"]*"[^>]*>(.*?)</a>""", RegexOptions.Singleline)]
     private static partial Regex ForumListingThreadRx();
+
+    // Thread links in a XenForo search results page (contentRow-title).
+    [GeneratedRegex("""class="contentRow-title"[^>]*>(?:\s*<[^>]+>)*\s*<a\s+href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/[^"]*"[^>]*>(.*?)</a>""", RegexOptions.Singleline)]
+    private static partial Regex SearchResultThreadRx();
 
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex StripHtmlTagsRx();
