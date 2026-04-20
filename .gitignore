@@ -10,9 +10,12 @@ data/bin/
 *.log
 
 # C# build artifacts (keep bin/publish)
-csharp/bin/Debug/
-csharp/bin/Release/
-csharp/obj/
+bin/Debug/
+bin/Release/
+obj/
+
+# Leftover build directory from old csharp/ project layout
+csharp/
 
 # OS / editor
 Thumbs.db

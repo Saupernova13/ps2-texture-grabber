@@ -7,8 +7,5 @@ TexturesPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\texture
 GamesettingsPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\gamesettings
 GameIndexPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\resources\GameIndex.yaml
 
-# FlareSolverr endpoint
-FlareSolverrUrl=http://localhost:8191/v1
-
 # GBAtemp subforum node ID (PCSX2 HD Texture Pack Group)
 GbatempNodeId=549
