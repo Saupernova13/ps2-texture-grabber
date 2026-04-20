@@ -59,15 +59,26 @@ public sealed class JobService
 
         var psi = new ProcessStartInfo
         {
-            FileName         = exePath,
-            Arguments        = $"worker --job-file \"{jobFile}\"",
-            CreateNoWindow   = true,
-            UseShellExecute  = false,
-            WindowStyle      = ProcessWindowStyle.Hidden,
+            FileName               = exePath,
+            Arguments              = $"worker --job-file \"{jobFile}\"",
+            CreateNoWindow         = true,
+            UseShellExecute        = false,
+            WindowStyle            = ProcessWindowStyle.Hidden,
+            // Redirect stdio so the worker does not inherit the parent console
+            // handles — otherwise the cmd shim (dlps2texture.cmd) stays attached
+            // to the background worker and the terminal appears to hang.
+            RedirectStandardInput  = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
         };
 
         var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start worker process");
+
+        // Drop our ends of the pipes — the worker logs to a file, not stdout.
+        proc.StandardInput.Close();
+        proc.StandardOutput.Close();
+        proc.StandardError.Close();
 
         _log.Success($"Spawned worker (PID {proc.Id}) for job {state.Id}");
         return new SpawnResult(state.Id, jobFile, logFile, proc.Id);

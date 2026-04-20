@@ -6,9 +6,9 @@ using Ps2TextureGrabber.Models;
 namespace Ps2TextureGrabber.Services;
 
 /// <summary>
-/// Browses the GBAtemp PCSX2 HD Texture Pack subforum via FlareSolverr,
-/// scores thread titles against a serial/game-name query, and extracts
-/// download links from the winning thread.
+/// Browses the GBAtemp PCSX2 HD Texture Pack subforum, scores thread titles
+/// against a serial/game-name query, and extracts download links from the
+/// winning thread.
 /// </summary>
 public sealed partial class GbatempService
 {
@@ -26,73 +26,106 @@ public sealed partial class GbatempService
         new HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 10 })
     { Timeout = TimeSpan.FromSeconds(20) };
 
-    private readonly FlareSolverrClient _flare;
-    private readonly Logger             _log;
+    private readonly PlaywrightFetcher _flare;
+    private readonly Logger            _log;
 
-    public GbatempService(FlareSolverrClient flare, Logger log)
+    public GbatempService(PlaywrightFetcher flare, Logger log)
     {
         _flare = flare;
         _log   = log;
     }
 
     // -------------------------------------------------------------------------
-    // Forum search
+    // Forum browse (no search form — pages the forum listing directly)
 
     public async Task<ForumThread?> FindThreadAsync(
         string  serial,
         string? gameName,
-        int     nodeId   = 549,
-        int     maxPages = 10,
+        int     nodeId    = 549,
+        int     maxPages  = 5,
+        string? userQuery = null,
         CancellationToken ct = default)
     {
-        var sessionId  = await _flare.CreateSessionAsync().ConfigureAwait(false);
-        var allThreads = new Dictionary<string, ForumThread>(capacity: 400);
-        ForumThread? bestResult = null;
-        int          bestScore  = 0;
+        var keywords = !string.IsNullOrWhiteSpace(userQuery)
+            ? userQuery.Trim()
+            : BuildSearchKeywords(serial, gameName);
 
-        try
+        if (string.IsNullOrWhiteSpace(keywords))
         {
-            for (int page = 1; page <= maxPages; page++)
+            _log.Warn("No search keywords available");
+            return null;
+        }
+
+        _log.Info($"Browsing GBAtemp forum (node {nodeId}) for: {keywords}");
+
+        ForumThread? best      = null;
+        int          bestScore = int.MinValue;
+
+        for (int page = 1; page <= maxPages; page++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var forumUrl = page == 1
+                ? $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/"
+                : $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/page-{page}";
+
+            _log.Debug($"  Loading forum page {page}: {forumUrl}");
+
+            PlaywrightFetcher.PageResult listing;
+            try { listing = await _flare.GetPageAsync(forumUrl, maxTimeoutMs: 60_000).ConfigureAwait(false); }
+            catch (Exception ex) { _log.Warn($"  Forum page {page} fetch failed: {ex.Message}"); break; }
+
+            var threads = ParseForumListingThreads(listing.Html);
+            _log.Debug($"  Parsed {threads.Count} thread(s) from page {page}");
+
+            if (threads.Count == 0) break;
+
+            foreach (var t in threads)
             {
-                ct.ThrowIfCancellationRequested();
-
-                var pageUrl = page == 1
-                    ? $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/"
-                    : $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/page-{page}";
-
-                _log.Info($"Browsing GBAtemp forum page {page}...");
-
-                FlareSolverrClient.PageResult resp;
-                try { resp = await _flare.GetPageAsync(pageUrl, sessionId).ConfigureAwait(false); }
-                catch (Exception ex) { _log.Warn($"  Page {page} fetch failed: {ex.Message}"); continue; }
-
-                List<ForumThread> pageThreads = ParseThreadsFromHtml(resp.Html);
-                _log.Debug($"  Page {page} html={resp.Html.Length} threads={pageThreads.Count} allSoFar={allThreads.Count}");
-
-                if (pageThreads.Count == 0) { _log.Debug($"  Page {page} returned no thread links — stopping"); break; }
-
-                foreach (var t in pageThreads) allThreads.TryAdd(t.ThreadId, t);
-                _log.Debug($"  Page {page} allThreads after add: {allThreads.Count}");
-
-                foreach (var t in pageThreads)
-                {
-                    int score = ScoreThread(t, serial, gameName);
-                    if (score > bestScore) { bestScore = score; bestResult = t; }
-                }
-
-                if (bestScore >= 50) { _log.Debug($"  Strong match found on page {page} — stopping early"); break; }
+                int score = ScoreThread(t, serial, gameName);
+                _log.Debug($"    score={score,4} {t.Title}");
+                if (score > bestScore) { bestScore = score; best = t; }
             }
-        }
-        finally { await _flare.DestroySessionAsync(sessionId).ConfigureAwait(false); }
 
-        if (bestResult is not null && bestScore > 0)
+            if (best is not null && bestScore >= 60) break;
+        }
+
+        if (best is null) { _log.Warn("No matching thread found in forum listing"); return null; }
+        _log.Success($"Selected thread: \"{best.Title}\" (score {bestScore})");
+        return best;
+    }
+
+    private static List<ForumThread> ParseForumListingThreads(string html)
+    {
+        var results = new List<ForumThread>();
+        var seen    = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (Match m in ForumListingThreadRx().Matches(html))
         {
-            _log.Success($"Selected thread: \"{bestResult.Title}\" (score {bestScore})");
-            return bestResult;
+            var slug  = m.Groups[1].Value;
+            var id    = m.Groups[2].Value;
+            if (!seen.Add(id)) continue;
+
+            var raw   = m.Groups[3].Value;
+            var title = WebUtility.HtmlDecode(StripHtmlTagsRx().Replace(raw, string.Empty)).Trim();
+            if (string.IsNullOrWhiteSpace(title)) continue;
+
+            results.Add(new ForumThread(id, slug, title, $"https://gbatemp.net/threads/{slug}.{id}/"));
         }
 
-        _log.Warn($"No matching thread found in {allThreads.Count} forum entries scanned");
-        return null;
+        return results;
+    }
+
+    private static string BuildSearchKeywords(string serial, string? gameName)
+    {
+        // Prefer the human-readable title (matches thread titles); fall back to serial.
+        if (!string.IsNullOrWhiteSpace(gameName))
+        {
+            // Drop parenthetical region tags like "(NTSC-J)" that rarely appear in titles.
+            var cleaned = Regex.Replace(gameName, @"\s*\([^)]*\)\s*", " ").Trim();
+            return string.IsNullOrWhiteSpace(cleaned) ? gameName.Trim() : cleaned;
+        }
+        return serial?.Trim() ?? string.Empty;
     }
 
     private static int ScoreThread(ForumThread t, string serial, string? gameName)
@@ -110,22 +143,6 @@ public sealed partial class GbatempService
         if (NoiseTitleRx().IsMatch(t.Title))   score -= 50;
         if (QualityTitleRx().IsMatch(t.Title)) score += 20;
         return score;
-    }
-
-    private static List<ForumThread> ParseThreadsFromHtml(string html)
-    {
-        var seen    = new HashSet<string>(StringComparer.Ordinal);
-        var threads = new List<ForumThread>();
-        foreach (Match m in ThreadLinkRx().Matches(html))
-        {
-            var id = m.Groups[2].Value;
-            if (!seen.Add(id)) continue;
-            var title = WebUtility.HtmlDecode(m.Groups[3].Value.Trim());
-            if (string.IsNullOrWhiteSpace(title) || PaginationTitleRx().IsMatch(title)) continue;
-            threads.Add(new ForumThread(id, m.Groups[1].Value, title,
-                $"https://gbatemp.net/threads/{m.Groups[1].Value}.{id}/"));
-        }
-        return threads;
     }
 
     // =========================================================================
@@ -374,11 +391,12 @@ public sealed partial class GbatempService
 
     // ---- compiled regexes ----
 
-    [GeneratedRegex("""href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/"\s[^>]*>([^<]+)</a>""")]
-    private static partial Regex ThreadLinkRx();
+    // Thread links in a XenForo forum listing page (structItem-title).
+    [GeneratedRegex("""class="[^"]*structItem-title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*<a\s+href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/[^"]*"[^>]*>(.*?)</a>""", RegexOptions.Singleline)]
+    private static partial Regex ForumListingThreadRx();
 
-    [GeneratedRegex(@"^(Page \d+|#\d+|Last)$", RegexOptions.IgnoreCase)]
-    private static partial Regex PaginationTitleRx();
+    [GeneratedRegex(@"<[^>]+>")]
+    private static partial Regex StripHtmlTagsRx();
 
     // All post bodies in a thread page — each match.Groups[1] is one post.
     [GeneratedRegex("""<div\s+class="bbWrapper">(.*?)</div>\s*(?=<(?:div|aside|footer|article))""", RegexOptions.Singleline)]

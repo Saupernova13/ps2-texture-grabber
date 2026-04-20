@@ -17,13 +17,18 @@ public sealed partial class WikiService
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromDays(7);
 
-    private readonly FlareSolverrClient _flare;
-    private readonly Logger             _log;
-    private readonly string             _wikiCacheDir;
-
-    public WikiService(FlareSolverrClient flare, Logger log, string wikiCacheDir)
+    private static readonly HttpClient _http = new(
+        new HttpClientHandler { AllowAutoRedirect = true })
     {
-        _flare        = flare;
+        Timeout    = TimeSpan.FromSeconds(30),
+        DefaultRequestHeaders = { { "User-Agent", "ps2tex/1.0" } },
+    };
+
+    private readonly Logger _log;
+    private readonly string _wikiCacheDir;
+
+    public WikiService(Logger log, string wikiCacheDir)
+    {
         _log          = log;
         _wikiCacheDir = wikiCacheDir;
         Directory.CreateDirectory(wikiCacheDir);
@@ -141,16 +146,12 @@ public sealed partial class WikiService
         var key    = $"opensearch_{query}_{limit}";
 
         _log.Debug($"Wiki opensearch: {query}");
-        var raw = await FetchCachedAsync(key, apiUrl, ct).ConfigureAwait(false);
-        if (raw is null) return [];
-
-        // FlareSolverr wraps JSON in <pre>...</pre>
-        var preM = PreTagRx().Match(raw);
-        var json = preM.Success ? WebUtility.HtmlDecode(preM.Groups[1].Value) : raw;
+        var json = await FetchCachedAsync(key, apiUrl, ct).ConfigureAwait(false);
+        if (json is null) return [];
 
         try
         {
-            var arr = JsonNode.Parse(json)?.AsArray();
+            var arr = JsonNode.Parse(json.Trim())?.AsArray();
             if (arr is null || arr.Count < 4) return [];
 
             var titles = arr[1]?.AsArray();
@@ -295,10 +296,10 @@ public sealed partial class WikiService
             }
         }
 
-        var resp = await _flare.GetPageAsync(url).ConfigureAwait(false);
-        if (!string.IsNullOrEmpty(resp.Html))
-            File.WriteAllText(path, resp.Html);
-        return resp.Html;
+        var body = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(body))
+            File.WriteAllText(path, body);
+        return body;
     }
 
     private string CachePath(string key)
@@ -316,9 +317,6 @@ public sealed partial class WikiService
 
     [GeneratedRegex(@"<h1[^>]*class=""firstHeading""[^>]*>([^<]+)</h1>")]
     private static partial Regex H1TitleRx();
-
-    [GeneratedRegex(@"<pre[^>]*>(.*?)</pre>", RegexOptions.Singleline)]
-    private static partial Regex PreTagRx();
 
     [GeneratedRegex(@"(?is)<script[^>]*>.*?</script>")]
     private static partial Regex ScriptRx();

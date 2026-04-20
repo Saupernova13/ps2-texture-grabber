@@ -53,7 +53,6 @@ var gamesettingsPath = Get("GamesettingsPath", cli.GamesettingsPath,
 var gameIndexPath    = Get("GameIndexPath",    cli.GameIndexPath,
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "EmuDeck", "Emulators", "PCSX2-Qt", "resources", "GameIndex.yaml"));
-var flareSolverrUrl  = Get("FlareSolverrUrl",  cli.FlareSolverrUrl,  "http://localhost:8191/v1");
 var nodeId           = cli.NodeId > 0 ? cli.NodeId
     : (settings.TryGetValue("GbatempNodeId", out var nStr) && int.TryParse(nStr, out var n) ? n : 549);
 
@@ -137,7 +136,6 @@ log.Info("Starting texture grabber");
 log.Info($"  Query:        {cli.Query}");
 log.Debug($"  Textures:     {texturesPath}");
 log.Debug($"  Gamesettings: {gamesettingsPath}");
-log.Debug($"  FlareSolverr: {flareSolverrUrl}");
 
 // 1. Resolve name -> serial
 var gameDb  = new GameDbService(log).Load(gameIndexPath, AppPaths.GameDbCache);
@@ -147,9 +145,8 @@ if (entry is null)
 {
     // Wiki fallback
     log.Warn($"No local GameDB match for '{cli.Query}' — trying wiki.pcsx2.net...");
-    using var flare2 = new FlareSolverrClient(flareSolverrUrl, log);
-    var wiki2        = new WikiService(flare2, log, AppPaths.WikiCacheDir);
-    var wikiSerial   = await wiki2.GetSerialForNameAsync(cli.Query);
+    var wiki2      = new WikiService(log, AppPaths.WikiCacheDir);
+    var wikiSerial = await wiki2.GetSerialForNameAsync(cli.Query);
     if (wikiSerial is not null)
     {
         entry = new GameDbService(log).FindBySerial(gameDb, wikiSerial)
@@ -166,20 +163,12 @@ if (entry is null)
 
 var gameName = entry.DisplayName;
 
-// 2. Check FlareSolverr
-using var flare = new FlareSolverrClient(flareSolverrUrl, log);
-if (!await flare.IsReachableAsync())
-{
-    log.Error($"FlareSolverr is not reachable at {flareSolverrUrl}");
-    log.Error("Install/start it (https://github.com/FlareSolverr/FlareSolverr) and retry.");
-    log.Info("Quick Docker: docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest");
-    return 1;
-}
-log.Debug("FlareSolverr reachable");
+// 2. Initialise Playwright browser (solves Cloudflare challenges natively)
+await using var fetcher = new PlaywrightFetcher(log);
 
 // 3. Find thread
-var gbatemp = new GbatempService(flare, log);
-var thread  = await gbatemp.FindThreadAsync(entry.Serial, gameName, nodeId);
+var gbatemp = new GbatempService(fetcher, log);
+var thread  = await gbatemp.FindThreadAsync(entry.Serial, gameName, nodeId, userQuery: cli.Query);
 if (thread is null)
 {
     log.Error($"No matching thread for {entry.Serial} '{gameName}'");
@@ -207,7 +196,6 @@ var jobState = new JobState
     DownloadLinks    = links,
     TexturesPath     = texturesPath,
     GamesettingsPath = gamesettingsPath,
-    FlareSolverrUrl  = flareSolverrUrl,
 };
 
 var jobSvc = new JobService(log, AppPaths.JobsDir);

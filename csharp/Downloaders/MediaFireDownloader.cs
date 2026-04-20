@@ -33,7 +33,7 @@ public sealed partial class MediaFireDownloader : IDownloader
             throw new InvalidOperationException(
                 $"Could not find direct download link on MediaFire page: {url}");
 
-        var directUrl = directM.Groups[1].Value;
+        var directUrl = directM.Value;
         _log.Debug($"MediaFire direct URL: {directUrl}");
 
         using var resp = await client.GetAsync(
@@ -68,7 +68,8 @@ public sealed partial class MediaFireDownloader : IDownloader
         if (onProgress is not null && total > 0) onProgress(read, total, 100);
     }
 
-    // The download URL appears as: id="downloadButton" href="https://download..."
-    [GeneratedRegex(@"id=""downloadButton""\s+href=""([^""]+)""")]
+    // MediaFire embeds the direct URL in the page as download.mediafire.com/...
+    // Attribute order on #downloadButton changes; match the URL directly instead.
+    [GeneratedRegex(@"https?://download\d*\.mediafire\.com/[A-Za-z0-9._/\-?=&%+]+")]
     private static partial Regex DirectLinkRx();
 }
