@@ -103,7 +103,7 @@ public sealed partial class GbatempService
         string keywords, int nodeId, CancellationToken ct)
     {
         var encoded = Uri.EscapeDataString(keywords);
-        var url = $"https://gbatemp.net/search/?q={encoded}&t=thread&c%5Bnode%5D={nodeId}&o=relevance";
+        var url = $"https://gbatemp.net/search/?q={encoded}&t=thread&o=relevance";
 
         _log.Info($"Searching GBAtemp for: {keywords}");
         _log.Debug($"  Search URL: {url}");
