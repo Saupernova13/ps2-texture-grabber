@@ -1,6 +1,8 @@
-﻿using System.Net;
+using System.Net;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Ps2TextureGrabber.Models;
 
 namespace Ps2TextureGrabber.Services;
@@ -9,6 +11,14 @@ namespace Ps2TextureGrabber.Services;
 /// Browses the GBAtemp PCSX2 HD Texture Pack subforum, scores thread titles
 /// against a serial/game-name query, and extracts download links from the
 /// winning thread.
+///
+/// Discovery order:
+///   1. Local thread cache (JSON, built up over time).
+///   2. RSS feed — plain HTTP, no Playwright, no auth. Covers the ~40 most
+///      recently active threads. Results are merged into the cache.
+///   3. Playwright forum-page scrape (parallel) — used only when the cache
+///      has no confident match. Results are also merged into the cache so
+///      future searches skip this step.
 /// </summary>
 public sealed partial class GbatempService
 {
@@ -36,7 +46,7 @@ public sealed partial class GbatempService
     }
 
     // -------------------------------------------------------------------------
-    // Thread discovery: search-first, forum-listing fallback, multi-candidate
+    // Thread discovery
 
     /// <summary>
     /// Returns all candidate threads sorted by score (desc). All returned
@@ -61,135 +71,206 @@ public sealed partial class GbatempService
             return [];
         }
 
-        // 1. Try GBAtemp search endpoint first
-        var threads = await SearchGbatempAsync(keywords, nodeId, ct).ConfigureAwait(false);
+        // 1. Load the thread cache built up from previous runs.
+        var cache = LoadThreadCache(nodeId);
+        _log.Debug($"  Thread cache: {cache.Count} known thread(s)");
 
-        // 2. Fall back to forum listing pagination if search yielded nothing
-        if (threads.Count == 0)
-            threads = await BrowseForumListingAsync(serial, gameName, keywords, nodeId, maxPages, ct).ConfigureAwait(false);
+        // 2. Refresh via RSS — plain HTTP, no Playwright required.
+        var rssThreads = await FetchRssThreadsAsync(nodeId, ct).ConfigureAwait(false);
+        bool cacheUpdated = MergeIntoCache(cache, rssThreads);
 
-        if (threads.Count == 0)
+        // 3. Score everything in the cache.
+        var candidates = ScoreAndFilter(cache.Values, serial, gameName);
+        int bestScore = candidates.Count > 0 ? candidates[0].Score : 0;
+
+        // 4. If nothing confident found, scrape forum pages in parallel via Playwright.
+        if (bestScore < 20)
+        {
+            _log.Info($"Cache/RSS miss (best score {bestScore}) — scraping forum pages in parallel");
+            var scraped = await BrowseForumPagesParallelAsync(nodeId, maxPages, ct).ConfigureAwait(false);
+            bool added  = MergeIntoCache(cache, scraped);
+            cacheUpdated |= added;
+            candidates = ScoreAndFilter(cache.Values, serial, gameName);
+        }
+
+        // 5. Persist any newly discovered threads for future searches.
+        if (cacheUpdated)
+            SaveThreadCache(nodeId, cache);
+
+        if (candidates.Count == 0)
         {
             _log.Warn("No matching threads found");
             return [];
         }
 
-        // 3. Score, log, and return candidates within 10 points of best
-        var scored = threads
-            .Select(t => (Thread: t, Score: ScoreThread(t, serial, gameName)))
-            .OrderByDescending(x => x.Score)
-            .ToList();
-
-        foreach (var (t, score) in scored)
+        foreach (var (t, score) in candidates.Take(10))
             _log.Debug($"    score={score,4} {t.Title}");
 
-        int bestScore = scored[0].Score;
-        var candidates = scored
-            .Where(x => x.Score >= bestScore - 10)
+        int best = candidates[0].Score;
+        var result = candidates
+            .Where(x => x.Score >= best - 10)
             .Select(x => x.Thread)
             .ToList();
 
-        _log.Success($"Selected thread: \"{candidates[0].Title}\" (score {bestScore})");
-        if (candidates.Count > 1)
-            _log.Info($"  {candidates.Count - 1} fallback candidate(s) within 10 pts");
+        _log.Success($"Selected thread: \"{result[0].Title}\" (score {best})");
+        if (result.Count > 1)
+            _log.Info($"  {result.Count - 1} fallback candidate(s) within 10 pts");
 
-        return candidates;
+        return result;
     }
 
     // -------------------------------------------------------------------------
-    // GBAtemp XenForo search (mimics "Search titles only / This forum")
+    // RSS feed (plain HTTP, no Playwright)
 
-    private async Task<List<ForumThread>> SearchGbatempAsync(
-        string keywords, int nodeId, CancellationToken ct)
+    private async Task<List<ForumThread>> FetchRssThreadsAsync(int nodeId, CancellationToken ct)
     {
-        var encoded = Uri.EscapeDataString(keywords);
-        var url = $"https://gbatemp.net/search/?q={encoded}&t=thread&o=relevance";
-
-        _log.Info($"Searching GBAtemp for: {keywords}");
-        _log.Debug($"  Search URL: {url}");
+        var url = $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/index.rss";
+        _log.Info($"Fetching GBAtemp RSS (node {nodeId})");
 
         try
         {
-            var result = await _flare.GetPageAsync(url, maxTimeoutMs: 60_000).ConfigureAwait(false);
-            var threads = ParseSearchResultThreads(result.Html);
-            _log.Debug($"  Search returned {threads.Count} result(s)");
-            return threads;
+            var xml     = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+            var doc     = XDocument.Parse(xml);
+            var results = new List<ForumThread>();
+
+            foreach (var item in doc.Descendants("item"))
+            {
+                var title = item.Element("title")?.Value?.Trim();
+                var link  = item.Element("link")?.Value?.Trim();
+                var guid  = item.Element("guid")?.Value?.Trim();
+
+                if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(link)) continue;
+
+                var m    = ThreadUrlRx().Match(link);
+                var slug = m.Success ? m.Groups[1].Value : "";
+                var id   = m.Success ? m.Groups[2].Value : (guid ?? "");
+                if (string.IsNullOrEmpty(id)) continue;
+
+                results.Add(new ForumThread(id, slug, WebUtility.HtmlDecode(title), link));
+            }
+
+            _log.Debug($"  RSS: {results.Count} thread(s)");
+            return results;
         }
         catch (Exception ex)
         {
-            _log.Warn($"  GBAtemp search failed: {ex.Message} — falling back to forum listing");
+            _log.Warn($"  RSS fetch failed: {ex.Message}");
             return [];
         }
     }
 
-    private static List<ForumThread> ParseSearchResultThreads(string html)
+    // -------------------------------------------------------------------------
+    // Thread cache (JSON, persisted across runs)
+
+    private static string ThreadCacheFile(int nodeId)
+        => Path.Combine(AppPaths.CacheDir, $"gbatemp-threads-{nodeId}.json");
+
+    private static readonly JsonSerializerOptions _cacheJsonOpts = new()
     {
-        var results = new List<ForumThread>();
-        var seen    = new HashSet<string>(StringComparer.Ordinal);
+        WriteIndented          = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
-        foreach (Match m in SearchResultThreadRx().Matches(html))
+    private static Dictionary<string, ForumThread> LoadThreadCache(int nodeId)
+    {
+        var path = ThreadCacheFile(nodeId);
+        if (!File.Exists(path)) return new(StringComparer.Ordinal);
+        try
         {
-            var slug  = m.Groups[1].Value;
-            var id    = m.Groups[2].Value;
-            if (!seen.Add(id)) continue;
-
-            var raw   = m.Groups[3].Value;
-            var title = WebUtility.HtmlDecode(StripHtmlTagsRx().Replace(raw, string.Empty)).Trim();
-            if (string.IsNullOrWhiteSpace(title)) continue;
-
-            results.Add(new ForumThread(id, slug, title, $"https://gbatemp.net/threads/{slug}.{id}/"));
+            return JsonSerializer.Deserialize<Dictionary<string, ForumThread>>(
+                       File.ReadAllText(path), _cacheJsonOpts)
+                   ?? new(StringComparer.Ordinal);
         }
+        catch { return new(StringComparer.Ordinal); }
+    }
 
-        return results;
+    private static void SaveThreadCache(int nodeId, Dictionary<string, ForumThread> cache)
+    {
+        Directory.CreateDirectory(AppPaths.CacheDir);
+        File.WriteAllText(ThreadCacheFile(nodeId),
+            JsonSerializer.Serialize(cache, _cacheJsonOpts));
+    }
+
+    /// <summary>Merges threads into cache by ThreadId. Returns true if any new entries were added.</summary>
+    private static bool MergeIntoCache(
+        Dictionary<string, ForumThread> cache, IEnumerable<ForumThread> threads)
+    {
+        bool added = false;
+        foreach (var t in threads)
+            if (!string.IsNullOrEmpty(t.ThreadId) && cache.TryAdd(t.ThreadId, t))
+                added = true;
+        return added;
     }
 
     // -------------------------------------------------------------------------
-    // Forum listing pagination (fallback when search returns nothing)
+    // Scoring
 
-    private async Task<List<ForumThread>> BrowseForumListingAsync(
-        string  serial,
-        string? gameName,
-        string  keywords,
-        int     nodeId,
-        int     maxPages,
-        CancellationToken ct)
+    private List<(ForumThread Thread, int Score)> ScoreAndFilter(
+        IEnumerable<ForumThread> threads, string serial, string? gameName)
+        => threads
+            .Select(t => (Thread: t, Score: ScoreThread(t, serial, gameName)))
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .ToList();
+
+    private static int ScoreThread(ForumThread t, string serial, string? gameName)
     {
-        _log.Info($"Browsing GBAtemp forum (node {nodeId}) for: {keywords}");
-
-        var all       = new List<ForumThread>();
-        int bestScore = int.MinValue;
-
-        for (int page = 1; page <= maxPages; page++)
+        int score = 0;
+        if (!string.IsNullOrEmpty(serial) && t.Title.Contains(serial, StringComparison.OrdinalIgnoreCase))
+            score += 100;
+        if (!string.IsNullOrEmpty(gameName))
         {
-            ct.ThrowIfCancellationRequested();
+            var tokens   = NormalizeText(gameName).Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tok => tok.Length >= 2);
+            var titleLow = t.Title.ToLowerInvariant();
+            foreach (var tok in tokens)
+                if (titleLow.Contains(tok, StringComparison.Ordinal)) score += 10;
+        }
+        if (NoiseTitleRx().IsMatch(t.Title))   score -= 50;
+        if (QualityTitleRx().IsMatch(t.Title)) score += 20;
+        return score;
+    }
 
-            var forumUrl = page == 1
+    // -------------------------------------------------------------------------
+    // Forum listing pagination via Playwright (parallel, up to 3 concurrent pages)
+
+    private async Task<List<ForumThread>> BrowseForumPagesParallelAsync(
+        int nodeId, int maxPages, CancellationToken ct)
+    {
+        _log.Info($"Browsing GBAtemp forum (node {nodeId}), pages 1–{maxPages} in parallel");
+
+        var sem   = new SemaphoreSlim(3, 3);
+        var tasks = Enumerable.Range(1, maxPages)
+            .Select(page => FetchForumPageAsync(nodeId, page, sem, ct))
+            .ToArray();
+
+        var pages = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var all   = pages.SelectMany(p => p).ToList();
+        _log.Debug($"  Forum scrape total: {all.Count} thread(s) from {maxPages} page(s)");
+        return all;
+    }
+
+    private async Task<List<ForumThread>> FetchForumPageAsync(
+        int nodeId, int page, SemaphoreSlim sem, CancellationToken ct)
+    {
+        await sem.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var url = page == 1
                 ? $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/"
                 : $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/page-{page}";
 
-            _log.Debug($"  Loading forum page {page}: {forumUrl}");
-
-            PlaywrightFetcher.PageResult listing;
-            try { listing = await _flare.GetPageAsync(forumUrl, maxTimeoutMs: 60_000).ConfigureAwait(false); }
-            catch (Exception ex) { _log.Warn($"  Forum page {page} fetch failed: {ex.Message}"); break; }
-
+            _log.Debug($"  Loading forum page {page}: {url}");
+            var listing = await _flare.GetPageAsync(url, maxTimeoutMs: 60_000).ConfigureAwait(false);
             var threads = ParseForumListingThreads(listing.Html);
-            _log.Debug($"  Parsed {threads.Count} thread(s) from page {page}");
-
-            if (threads.Count == 0) break;
-
-            all.AddRange(threads);
-
-            foreach (var t in threads)
-            {
-                int score = ScoreThread(t, serial, gameName);
-                if (score > bestScore) bestScore = score;
-            }
-
-            if (bestScore >= 60) break;
+            _log.Debug($"  Page {page}: {threads.Count} thread(s)");
+            return threads;
         }
-
-        return all;
+        catch (Exception ex)
+        {
+            _log.Warn($"  Forum page {page} fetch failed: {ex.Message}");
+            return [];
+        }
+        finally { sem.Release(); }
     }
 
     private static List<ForumThread> ParseForumListingThreads(string html)
@@ -215,31 +296,12 @@ public sealed partial class GbatempService
 
     private static string BuildSearchKeywords(string serial, string? gameName)
     {
-        // Prefer the human-readable title (matches thread titles); fall back to serial.
         if (!string.IsNullOrWhiteSpace(gameName))
         {
-            // Drop parenthetical region tags like "(NTSC-J)" that rarely appear in titles.
             var cleaned = Regex.Replace(gameName, @"\s*\([^)]*\)\s*", " ").Trim();
             return string.IsNullOrWhiteSpace(cleaned) ? gameName.Trim() : cleaned;
         }
         return serial?.Trim() ?? string.Empty;
-    }
-
-    private static int ScoreThread(ForumThread t, string serial, string? gameName)
-    {
-        int score = 0;
-        if (!string.IsNullOrEmpty(serial) && t.Title.Contains(serial, StringComparison.OrdinalIgnoreCase))
-            score += 100;
-        if (!string.IsNullOrEmpty(gameName))
-        {
-            var tokens   = NormalizeText(gameName).Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tok => tok.Length >= 2);
-            var titleLow = t.Title.ToLowerInvariant();
-            foreach (var tok in tokens)
-                if (titleLow.Contains(tok, StringComparison.Ordinal)) score += 10;
-        }
-        if (NoiseTitleRx().IsMatch(t.Title))   score -= 50;
-        if (QualityTitleRx().IsMatch(t.Title)) score += 20;
-        return score;
     }
 
     // =========================================================================
@@ -492,10 +554,6 @@ public sealed partial class GbatempService
     [GeneratedRegex("""class="[^"]*structItem-title[^"]*"[^>]*>(?:\s*<[^>]+>)*\s*<a\s+href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/[^"]*"[^>]*>(.*?)</a>""", RegexOptions.Singleline)]
     private static partial Regex ForumListingThreadRx();
 
-    // Thread links in a XenForo search results page (contentRow-title).
-    [GeneratedRegex("""class="contentRow-title"[^>]*>(?:\s*<[^>]+>)*\s*<a\s+href="/threads/([A-Za-z0-9\-_.]+)\.(\d+)/[^"]*"[^>]*>(.*?)</a>""", RegexOptions.Singleline)]
-    private static partial Regex SearchResultThreadRx();
-
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex StripHtmlTagsRx();
 
@@ -508,6 +566,10 @@ public sealed partial class GbatempService
 
     [GeneratedRegex(@"\b(hd|upscaled|texture|remaster|pack|replacement|4k|2k)\b", RegexOptions.IgnoreCase)]
     private static partial Regex QualityTitleRx();
+
+    // Thread URL slug and ID from an RSS <link> or forum href
+    [GeneratedRegex(@"/threads/([A-Za-z0-9\-_.]+)\.(\d+)/")]
+    private static partial Regex ThreadUrlRx();
 
     [GeneratedRegex(@"https?://mega\.nz/(?:file|folder)/[A-Za-z0-9#!_\-]+")]
     private static partial Regex MegaRx();
