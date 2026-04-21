@@ -10,6 +10,10 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="csharp/**" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MegaApiClient" Version="1.10.5" />
     <PackageReference Include="Microsoft.Playwright" Version="1.59.0" />
   </ItemGroup>
 </Project>

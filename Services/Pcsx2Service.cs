@@ -192,6 +192,34 @@ public sealed partial class Pcsx2Service
         return results;
     }
 
+    // -------------------------------------------------------------------------
+    // Local game discovery
+
+    /// <summary>
+    /// Returns the set of PS2 serials for games the user has locally in PCSX2,
+    /// inferred from gamesettings INI filenames and existing texture pack directories.
+    /// </summary>
+    public HashSet<string> GetLocalGameSerials(string gamesettingsPath, string texturesPath)
+    {
+        var serials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (Directory.Exists(gamesettingsPath))
+            foreach (var file in Directory.GetFiles(gamesettingsPath, "*.ini", SearchOption.TopDirectoryOnly))
+            {
+                var m = LocalSerialFileRx().Match(Path.GetFileNameWithoutExtension(file));
+                if (m.Success) serials.Add(m.Groups[1].Value.ToUpperInvariant());
+            }
+
+        if (Directory.Exists(texturesPath))
+            foreach (var dir in Directory.GetDirectories(texturesPath))
+            {
+                var name = Path.GetFileName(dir);
+                if (SerialFormatRx().IsMatch(name)) serials.Add(name.ToUpperInvariant());
+            }
+
+        return serials;
+    }
+
     // ---- compiled regexes ----
     [GeneratedRegex(@"^[A-Z]{4}-\d{5}_([0-9A-Fa-f]{8})$")]
     private static partial Regex CrcFileNameRx();
@@ -204,6 +232,10 @@ public sealed partial class Pcsx2Service
 
     [GeneratedRegex(@"(?m)^\s*LoadTextureReplacements\s*=\s*true")]
     private static partial Regex LoadTextureRx();
+
+    // Matches SLUS-21050 or SLUS-21050_04F9D87F (gamesettings INI filename stem)
+    [GeneratedRegex(@"^([A-Z]{4}-\d{5})(?:_[0-9A-Fa-f]{8})?$")]
+    private static partial Regex LocalSerialFileRx();
 
     private static Regex KeyValueRx(string key)
         => new($@"^\s*{Regex.Escape(key)}\s*=", RegexOptions.IgnoreCase);

@@ -1,11 +1,10 @@
-using System.Diagnostics;
+using CG.Web.MegaApiClient;
 using Ps2TextureGrabber.Services;
 
 namespace Ps2TextureGrabber.Downloaders;
 
 /// <summary>
-/// Downloads via MEGAcmd's mega-get.bat.
-/// Requires MEGAcmd installed at %ProgramFiles%\MEGAcmd or %LocalAppData%\MEGAcmd.
+/// Downloads from MEGA using MegaApiClient (no MEGAcmd required).
 /// </summary>
 public sealed class MegaDownloader : IDownloader
 {
@@ -19,70 +18,25 @@ public sealed class MegaDownloader : IDownloader
         CancellationToken        ct         = default)
     {
         _log.Info($"MEGA download: {url}");
-        var dir = Path.GetDirectoryName(outFile)!;
-        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
 
-        var megaExe = FindMegaGet()
-            ?? throw new FileNotFoundException(
-                "MEGAcmd (mega-get.bat) not found. " +
-                "Download from https://mega.io/cmd and install it.");
+        var client = new MegaApiClient();
+        await client.LoginAnonymousAsync().ConfigureAwait(false);
 
-        var psi = new ProcessStartInfo
-        {
-            FileName         = megaExe,
-            Arguments        = $"\"{url}\" \"{dir}\"",
-            CreateNoWindow   = true,
-            UseShellExecute  = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-        };
+        var node       = await client.GetNodeFromLinkAsync(new Uri(url)).ConfigureAwait(false);
+        var totalBytes = node.Size;
 
-        var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start mega-get process");
-
-        // mega-get doesn't stream byte progress; just wait for completion.
-        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"mega-get exited with code {proc.ExitCode}");
-
-        // mega-get names the file after the remote filename; find the newest file in dir.
-        var newest = new DirectoryInfo(dir)
-            .GetFiles()
-            .OrderByDescending(f => f.LastWriteTimeUtc)
-            .FirstOrDefault()
-            ?? throw new InvalidOperationException($"MEGA download produced no file in {dir}");
-
-        if (!string.Equals(newest.FullName, outFile, StringComparison.OrdinalIgnoreCase))
-            File.Move(newest.FullName, outFile, overwrite: true);
-    }
-
-    private static string? FindMegaGet()
-    {
-        // Try PATH first
-        foreach (var name in new[] { "mega-get.bat", "mega-get" })
-        {
-            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "")
-                                .Split(Path.PathSeparator))
+        IProgress<double>? progress = onProgress is null ? null
+            : new Progress<double>(d =>
             {
-                var full = Path.Combine(dir, name);
-                if (File.Exists(full)) return full;
-            }
-        }
+                var bytes = (long)(d * totalBytes);
+                var pct   = Math.Min(100, (int)(d * 100));
+                onProgress(bytes, totalBytes, pct);
+            });
 
-        // Known install locations
-        foreach (var candidate in new[]
-        {
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "MEGAcmd", "mega-get.bat"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MEGAcmd", "mega-get.bat"),
-        })
-        {
-            if (File.Exists(candidate)) return candidate;
-        }
+        _log.Debug($"MEGA node: {node.Name} ({totalBytes / 1_048_576.0:F1} MB)");
+        await client.DownloadFileAsync(node, outFile, progress, ct).ConfigureAwait(false);
 
-        return null;
+        _log.Success($"MEGA download complete: {outFile}");
     }
 }

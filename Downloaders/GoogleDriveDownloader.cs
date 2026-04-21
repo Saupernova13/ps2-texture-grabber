@@ -1,13 +1,12 @@
-using System.Diagnostics;
+using System.Net;
 using System.Text.RegularExpressions;
 using Ps2TextureGrabber.Services;
 
 namespace Ps2TextureGrabber.Downloaders;
 
 /// <summary>
-/// Downloads from Google Drive.  Prefers gdown if available (handles large-file
-/// virus-scan prompts automatically).  Falls back to the confirmation-token
-/// dance via HttpClient.
+/// Downloads from Google Drive public share links.
+/// Handles the virus-scan confirmation page (UUID + cookie flow used since 2022).
 /// </summary>
 public sealed partial class GoogleDriveDownloader : IDownloader
 {
@@ -26,15 +25,52 @@ public sealed partial class GoogleDriveDownloader : IDownloader
         var fileId = ExtractFileId(url)
             ?? throw new ArgumentException($"Could not extract Google Drive file ID from: {url}");
 
-        // Try gdown first
-        if (TryGdown(fileId, outFile))
+        var cookieJar = new CookieContainer();
+        var handler   = new HttpClientHandler
         {
-            _log.Success("Google Drive download complete via gdown");
+            AllowAutoRedirect      = true,
+            MaxAutomaticRedirections = 10,
+            CookieContainer        = cookieJar,
+            UseCookies             = true,
+        };
+        using var client = new HttpClient(handler);
+        client.Timeout = Timeout.InfiniteTimeSpan;
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ps2-texture-grabber/2.0");
+
+        // Attempt 1: usercontent domain with confirm=t (works for many files directly)
+        var directUrl = $"https://drive.usercontent.google.com/download?id={fileId}&export=download&confirm=t";
+        _log.Debug($"Google Drive: trying direct URL");
+
+        using var firstResp = await client.GetAsync(
+            directUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+
+        var contentType = firstResp.Content.Headers.ContentType?.MediaType ?? "";
+        if (firstResp.IsSuccessStatusCode &&
+            !contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
+        {
+            _log.Debug("Google Drive: direct download accepted");
+            await HttpStreamer.StreamToFileAsync(firstResp, outFile, onProgress, ct).ConfigureAwait(false);
             return;
         }
 
-        // Fallback: HTTP with confirmation-token handling
-        await HttpFallbackAsync(fileId, outFile, onProgress, ct).ConfigureAwait(false);
+        // Attempt 2: read the HTML to extract UUID from the virus-scan form
+        var page  = await firstResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var uuidM = UuidRx().Match(page);
+
+        if (!uuidM.Success)
+            throw new InvalidOperationException(
+                $"Google Drive: file {fileId} requires sign-in, is restricted, or does not exist");
+
+        var uuid        = uuidM.Groups[1].Value;
+        var downloadUrl = $"https://drive.usercontent.google.com/download?id={fileId}&export=download&confirm=t&uuid={uuid}";
+        _log.Debug($"Google Drive: using UUID confirmation ({uuid})");
+
+        using var resp = await client.GetAsync(
+            downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+
+        await HttpStreamer.StreamToFileAsync(resp, outFile, onProgress, ct).ConfigureAwait(false);
     }
 
     private static string? ExtractFileId(string url)
@@ -43,74 +79,9 @@ public sealed partial class GoogleDriveDownloader : IDownloader
         return m.Success ? m.Groups[1].Value : null;
     }
 
-    private bool TryGdown(string fileId, string outFile)
-    {
-        try
-        {
-            var gdown = FindOnPath("gdown");
-            if (gdown is null) return false;
-
-            _log.Debug("Using gdown for Google Drive download");
-            var psi = new ProcessStartInfo
-            {
-                FileName         = gdown,
-                Arguments        = $"--id {fileId} -O \"{outFile}\"",
-                CreateNoWindow   = true,
-                UseShellExecute  = false,
-            };
-            var proc = Process.Start(psi);
-            proc?.WaitForExit();
-            return proc?.ExitCode == 0 && File.Exists(outFile);
-        }
-        catch (Exception ex)
-        {
-            _log.Warn($"gdown failed: {ex.Message}; falling back to HTTP");
-            return false;
-        }
-    }
-
-    private async Task HttpFallbackAsync(
-        string                   fileId,
-        string                   outFile,
-        Action<long, long, int>? onProgress,
-        CancellationToken        ct)
-    {
-        _log.Debug("Google Drive HTTP confirmation-token fallback");
-        using var client  = new HttpClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ps2-texture-grabber/2.0");
-
-        var downloadUrl = $"https://drive.google.com/uc?export=download&id={fileId}";
-
-        using var first = await client.GetAsync(downloadUrl, ct).ConfigureAwait(false);
-        var html        = await first.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-        var confirmM = ConfirmTokenRx().Match(html);
-        var finalUrl = confirmM.Success
-            ? $"https://drive.google.com/uc?export=download&id={fileId}&confirm={confirmM.Groups[1].Value}"
-            : downloadUrl;
-
-        using var resp = await client.GetAsync(
-            finalUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-
-        await HttpStreamer.StreamToFileAsync(resp, outFile, onProgress, ct).ConfigureAwait(false);
-    }
-
-    private static string? FindOnPath(string exe)
-    {
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "")
-                            .Split(Path.PathSeparator))
-        {
-            var full = Path.Combine(dir, exe);
-            if (File.Exists(full)) return full;
-        }
-        return null;
-    }
-
     [GeneratedRegex(@"(?:drive\.google\.com/file/d/|open\?id=|uc\?[^""' <>]*id=)([A-Za-z0-9_\-]+)")]
     private static partial Regex FileIdRx();
 
-    [GeneratedRegex(@"confirm=([0-9A-Za-z_\-]+)")]
-    private static partial Regex ConfirmTokenRx();
+    [GeneratedRegex(@"name=""uuid""\s+value=""([^""]+)""")]
+    private static partial Regex UuidRx();
 }

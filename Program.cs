@@ -139,7 +139,25 @@ log.Debug($"  Gamesettings: {gamesettingsPath}");
 // 1. Resolve name -> serial
 var gameDbSvc = new GameDbService(log);
 var gameDb    = gameDbSvc.Load(gameIndexPath, AppPaths.GameDbCache);
-var entry     = gameDbSvc.Resolve(gameDb, cli.Query, cli.Interactive);
+
+// 1a. Prefer locally installed game — check gamesettings INIs and texture folders
+//     so that e.g. "The Sims 2" resolves to the user's PAL serial, not the US default.
+var pcsx2Svc    = new Pcsx2Service(log);
+var localSerials = pcsx2Svc.GetLocalGameSerials(gamesettingsPath, texturesPath);
+GameEntry? entry = null;
+
+if (localSerials.Count > 0)
+{
+    var localDb = gameDb.Where(e => localSerials.Contains(e.Serial)).ToList();
+    if (localDb.Count > 0)
+        entry = gameDbSvc.Resolve(localDb, cli.Query, cli.Interactive);
+    if (entry is not null)
+        log.Success($"[LOCAL] Matched to locally installed game {entry.Serial} ({entry.DisplayName}, {entry.Region})");
+}
+
+// 1b. Fall back to full GameIndex.yaml search (region-biased toward NTSC-U)
+if (entry is null)
+    entry = gameDbSvc.Resolve(gameDb, cli.Query, cli.Interactive);
 
 if (entry is null)
 {
