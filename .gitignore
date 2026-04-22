@@ -9,13 +9,26 @@ data/bin/
 # Logs
 *.log
 
-# C# build artifacts (keep bin/publish)
+# C# build artifacts (keep bin/publish tracked binaries)
 bin/Debug/
 bin/Release/
 obj/
 
+# Playwright browser runtime and publish-time generated data
+bin/publish/.playwright/
+bin/publish/node/
+bin/publish/package/
+bin/publish/cache/
+bin/publish/jobs/
+bin/publish/data/
+
 # Leftover build directory from old csharp/ project layout
 csharp/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
 
 # OS / editor
 Thumbs.db
