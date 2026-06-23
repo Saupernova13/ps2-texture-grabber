@@ -40,9 +40,10 @@ public static class WorkerRunner
         state.StartedAt = DateTime.UtcNow.ToString("o");
         Progress(state, jobFile, "pending", 0, "Worker starting");
 
+        string? jobDir = null;
         try
         {
-            var jobDir = Path.Combine(Path.GetDirectoryName(jobFile)!, state.Id);
+            jobDir = Path.Combine(Path.GetDirectoryName(jobFile)!, state.Id);
             Directory.CreateDirectory(jobDir);
 
             // ----------------------------------------------------------------
@@ -143,6 +144,10 @@ public static class WorkerRunner
                 $"All done! Texture pack installed for {state.GameName}");
 
             log.Success($"=== Job {state.Id} complete ===");
+
+            // Textures are now copied into PCSX2; drop the working dir (archive + extracted copy).
+            // The sibling data/jobs/<id>.json|.log history is untouched.
+            CleanupJobDir(jobDir, log);
         }
         catch (OperationCanceledException)
         {
@@ -150,6 +155,7 @@ public static class WorkerRunner
             state.Message = "Cancelled";
             Progress(state, jobFile, "failed", state.Progress, "Cancelled");
             log.Warn("Worker cancelled");
+            CleanupJobDir(jobDir, log);
         }
         catch (Exception ex)
         {
@@ -157,7 +163,26 @@ public static class WorkerRunner
             state.Message = ex.Message;
             Progress(state, jobFile, "failed", state.Progress, $"FAILED: {ex.Message}");
             log.Error($"Worker failed: {ex}");
+            CleanupJobDir(jobDir, log);   // Environment.Exit skips finally, so clean explicitly here.
             Environment.Exit(1);
+        }
+    }
+
+    /// <summary>
+    /// Deletes a job's working directory (downloaded archive + extracted copy) once the textures
+    /// have been installed, or on failure. Never throws.
+    /// </summary>
+    private static void CleanupJobDir(string? jobDir, Logger log)
+    {
+        if (string.IsNullOrEmpty(jobDir) || !Directory.Exists(jobDir)) return;
+        try
+        {
+            Directory.Delete(jobDir, recursive: true);
+            log.Debug($"Cleaned job working dir: {jobDir}");
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"Could not clean job working dir: {ex.Message}");
         }
     }
 
