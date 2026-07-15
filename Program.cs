@@ -206,7 +206,7 @@ else
 
     if (candidates.Count == 0)
     {
-        log.Error($"No matching thread for {entry.Serial} '{gameName}'");
+        log.Error($"No matching texture pack found for '{gameName}' [{entry.Serial}] — nothing installed.");
         log.Info($"Browse manually: https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/");
         return 1;
     }
@@ -223,7 +223,7 @@ else
 
     if (links.Count == 0)
     {
-        log.Error("No usable download links found in any candidate thread");
+        log.Error($"No usable download links in any matching thread for '{gameName}' [{entry.Serial}] — nothing installed.");
         return 1;
     }
 

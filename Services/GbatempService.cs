@@ -80,7 +80,7 @@ public sealed partial class GbatempService
         bool cacheUpdated = MergeIntoCache(cache, rssThreads);
 
         // 3. Score everything in the cache.
-        var candidates = ScoreAndFilter(cache.Values, serial, gameName);
+        var candidates = ScoreAndFilter(cache.Values, serial, gameName, userQuery);
         int bestScore = candidates.Count > 0 ? candidates[0].Score : 0;
 
         // 4. If nothing confident found, scrape forum pages in parallel via Playwright.
@@ -90,7 +90,7 @@ public sealed partial class GbatempService
             var scraped = await BrowseForumPagesParallelAsync(nodeId, maxPages, ct).ConfigureAwait(false);
             bool added  = MergeIntoCache(cache, scraped);
             cacheUpdated |= added;
-            candidates = ScoreAndFilter(cache.Values, serial, gameName);
+            candidates = ScoreAndFilter(cache.Values, serial, gameName, userQuery);
         }
 
         // 5. Persist any newly discovered threads for future searches.
@@ -129,7 +129,19 @@ public sealed partial class GbatempService
 
         try
         {
-            var xml     = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+            // Send browser-like headers — the RSS endpoint sits behind the same
+            // Cloudflare edge as the forum and rejects the default .NET UA (403).
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36");
+            req.Headers.Accept.ParseAdd("application/rss+xml, application/xml, text/xml, */*");
+            req.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
+
+            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+
+            var xml     = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             var doc     = XDocument.Parse(xml);
             var results = new List<ForumThread>();
 
@@ -154,7 +166,9 @@ public sealed partial class GbatempService
         }
         catch (Exception ex)
         {
-            _log.Warn($"  RSS fetch failed: {ex.Message}");
+            // Non-fatal: on a miss the caller falls through to the Playwright
+            // forum scrape, which shares the browser's Cloudflare clearance.
+            _log.Warn($"  RSS fetch failed ({ex.Message}) — will rely on forum scrape");
             return [];
         }
     }
@@ -206,12 +220,26 @@ public sealed partial class GbatempService
     // Scoring
 
     private List<(ForumThread Thread, int Score)> ScoreAndFilter(
-        IEnumerable<ForumThread> threads, string serial, string? gameName)
-        => threads
+        IEnumerable<ForumThread> threads, string serial, string? gameName, string? userQuery)
+    {
+        // Anchor identity on what the user asked for; fall back to the resolved
+        // game name. Numbers from EITHER source are required so the resolved
+        // game's sequel number is enforced even when the user omitted it.
+        var anchorSource = !string.IsNullOrWhiteSpace(userQuery)
+            ? userQuery
+            : (gameName ?? string.Empty);
+        var anchorTokens    = SignificantTokens(anchorSource);
+        var requiredNumbers = anchorTokens.Where(IsNumberToken)
+            .Concat(SignificantTokens(gameName ?? string.Empty).Where(IsNumberToken))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        return threads
             .Select(t => (Thread: t, Score: ScoreThread(t, serial, gameName)))
-            .Where(x => x.Score > 0)
+            .Where(x => TitleMatchesGame(x.Thread.Title, serial, anchorTokens, requiredNumbers))
             .OrderByDescending(x => x.Score)
             .ToList();
+    }
 
     private static int ScoreThread(ForumThread t, string serial, string? gameName)
     {
@@ -220,14 +248,79 @@ public sealed partial class GbatempService
             score += 100;
         if (!string.IsNullOrEmpty(gameName))
         {
-            var tokens   = NormalizeText(gameName).Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tok => tok.Length >= 2);
-            var titleLow = t.Title.ToLowerInvariant();
-            foreach (var tok in tokens)
-                if (titleLow.Contains(tok, StringComparison.Ordinal)) score += 10;
+            var titleTokens = new HashSet<string>(Tokenize(t.Title), StringComparer.Ordinal);
+            foreach (var tok in SignificantTokens(gameName))
+                if (titleTokens.Contains(tok)) score += 10;
         }
         if (NoiseTitleRx().IsMatch(t.Title))   score -= 50;
         if (QualityTitleRx().IsMatch(t.Title)) score += 20;
         return score;
+    }
+
+    // -------------------------------------------------------------------------
+    // Game-identity gate
+    //
+    // A thread is eligible only if its title plausibly refers to the resolved
+    // game. Without this, a stale-cache thread for an unrelated game (e.g. a
+    // "Baroque HD Texture Pack") scored on generic quality words alone and was
+    // selected for a "Persona 3" query. Ranking still uses ScoreThread; this
+    // decides eligibility.
+
+    private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
+        { "the", "of", "a", "an", "and", "to", "in", "for", "vs", "de", "la" };
+
+    private static readonly Dictionary<string, string> RomanToArabic = new(StringComparer.Ordinal)
+    {
+        ["i"] = "1", ["ii"] = "2", ["iii"] = "3", ["iv"] = "4", ["v"] = "5",
+        ["vi"] = "6", ["vii"] = "7", ["viii"] = "8", ["ix"] = "9", ["x"] = "10",
+    };
+
+    /// <summary>Lowercase tokens; standalone roman numerals mapped to arabic so
+    /// "Persona III" and "Persona 3" tokenize identically.</summary>
+    private static List<string> Tokenize(string s)
+    {
+        var raw = NormalizeText(s).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var outp = new List<string>(raw.Length);
+        foreach (var t in raw)
+            outp.Add(RomanToArabic.TryGetValue(t, out var a) ? a : t);
+        return outp;
+    }
+
+    private static bool IsNumberToken(string t) => t.Length > 0 && t.All(char.IsDigit);
+
+    /// <summary>Tokens minus stopwords; numbers kept (they discriminate sequels).</summary>
+    private static List<string> SignificantTokens(string s)
+        => Tokenize(s).Where(t => !StopWords.Contains(t)).Distinct(StringComparer.Ordinal).ToList();
+
+    private static bool TitleMatchesGame(
+        string title, string serial, List<string> anchorTokens, List<string> requiredNumbers)
+    {
+        if (!string.IsNullOrEmpty(serial)
+            && title.Contains(serial, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (anchorTokens.Count == 0) return false;
+
+        var titleTokens = new HashSet<string>(Tokenize(title), StringComparer.Ordinal);
+
+        // Every number the query/game names must be present (Persona 3 != 4/FES).
+        foreach (var n in requiredNumbers)
+            if (!titleTokens.Contains(n)) return false;
+
+        var distinctive = anchorTokens.Where(t => t.Length >= 3 && !IsNumberToken(t)).ToList();
+        if (distinctive.Count == 0)
+            // Anchor is only short/numeric tokens — require all of them present.
+            return anchorTokens.All(titleTokens.Contains);
+
+        int matched = distinctive.Count(titleTokens.Contains);
+        if (matched == 0) return false;
+
+        // Two+ distinctive words is strong on its own. A single shared word
+        // (e.g. "god" in both "God of War" and "God Hand") only counts when a
+        // specific sequel number also matched, or the game name is a single word.
+        return matched >= 2
+            || requiredNumbers.Count > 0
+            || matched == distinctive.Count;
     }
 
     // -------------------------------------------------------------------------
