@@ -13,22 +13,50 @@ invoking shell (or AI agent) terminating.
 
 ## Usage
 
+**The download never blocks.** `dlps2tex "Game"` resolves the game and its download
+links, spawns a worker, prints a **Job ID** and returns — typically in seconds. The
+worker downloads, extracts, installs and configures on its own. Poll it with `--status`;
+there is no flag to wait, and nothing to wait for.
+
 ```cmd
-:: Download a pack
+:: Download a pack -- returns a job id immediately
 dlps2tex "Dragon Ball Z Budokai Tenkaichi 3"
 
-:: List texture packs you already have installed locally
-dlps2tex --list
+:: A serial works too -- use the one dlrom's [HANDOFF] line gives you,
+:: so the textures match the exact version installed
+dlps2tex "SLUS-21569"
 
 :: Check a background job's status
 dlps2tex --status <jobId>
+dlps2tex --status <jobId> --json    :: machine-readable
+
+:: List texture packs you already have installed locally
+dlps2tex --list
+dlps2tex --list --json
 ```
 
-Interactive mode lets you disambiguate multiple regional matches:
+A spawn looks like this, and the shell prompt comes straight back:
+
+```
+Download job spawned.  It will continue in the background.
+  Job ID:   e5d3ccc09480
+  Log:      ...\data\jobs\e5d3ccc09480.log
+  Check:    ps2tex --status e5d3ccc09480
+```
+
+Add `--json` to a download to get the job id, serial, resolved links and log path as JSON
+instead of scraping that block.
+
+Interactive mode lets you disambiguate multiple regional matches. It is the one mode that
+expects a human at the keyboard — never use it from a script or an agent:
 
 ```cmd
 dlps2tex --query "Final Fantasy X" --interactive
 ```
+
+> `dlrom` uses the same job model (`dlrom --status <jobId>`, `dlrom --list`), so a job id
+> means the same thing in both tools. See
+> [dl-scripts](https://github.com/Saupernova13/dl-scripts).
 
 ## Prerequisites
 
