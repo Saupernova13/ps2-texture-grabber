@@ -4,16 +4,22 @@
 [![Release](https://img.shields.io/github/v/release/Saupernova13/ps2-texture-grabber?sort=semver)](https://github.com/Saupernova13/ps2-texture-grabber/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-One command to give a PS2 game HD textures.
+One command gives a PS2 game HD textures.
 
-`dlps2tex "God of War"` resolves the game to its PCSX2 serial, finds a texture
-pack for it, downloads it, installs it into PCSX2's `textures` folder, and writes
-the INI flags that make PCSX2 actually load it. No manual unzipping, no hunting
-for the right serial, no editing config by hand.
+Run `dlps2tex "God of War"`. It does five things for you:
+
+1. Works out the game's PCSX2 serial.
+2. Finds a texture pack for that serial.
+3. Downloads it.
+4. Installs it into PCSX2's `textures` folder.
+5. Writes the INI settings that make PCSX2 load it.
+
+No unzipping by hand. No hunting for the right serial. No editing config files.
 
 Packs come from [GBAtemp's PCSX2 HD Texture Pack subforum](https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.549/)
-and an Archive.org index, and can be hosted on MEGA, Google Drive, MediaFire,
-Yandex Disk, GitHub releases or plain HTTP — all handled for you.
+and from an Archive.org index. They can be hosted on MEGA, Google Drive,
+MediaFire, Yandex Disk, GitHub releases, or plain HTTP. All of those are
+handled for you.
 
 ---
 
@@ -28,8 +34,10 @@ Yandex Disk, GitHub releases or plain HTTP — all handled for you.
    dlps2tex --version
    ```
 
-No .NET installation is needed — the runtime is bundled. Keep `dlps2tex.cmd` and
-`ps2tex.exe` in the same folder; the launcher looks for the exe beside itself.
+No .NET installation is needed. The runtime is bundled in the zip.
+
+Keep `dlps2tex.cmd` and `ps2tex.exe` in the same folder. The launcher looks for
+the exe beside itself.
 
 > Prefer building it yourself? See [Building from source](#building-from-source).
 
@@ -39,18 +47,22 @@ No .NET installation is needed — the runtime is bundled. Keep `dlps2tex.cmd` a
 |---|---|
 | **Windows 10/11 (x64)** | The tool writes into PCSX2's `%APPDATA%` layout. |
 | **PCSX2-Qt** | The target. Paths default to the EmuDeck layout and are overridable. |
-| **7-Zip** — `winget install 7zip.7zip` | Needed for `.7z` and `.rar` packs. `.zip` works without it. |
+| **7-Zip** (`winget install 7zip.7zip`) | Needed for `.7z` and `.rar` packs. `.zip` works without it. |
 | **Edge or Chrome** | Used to read GBAtemp past its Cloudflare challenge. Pre-installed on Windows 11; the bundled Chromium is a less reliable fallback. |
 
 ---
 
 ## Usage
 
-**Nothing here blocks on a download.** A query resolves the game and its links,
-spawns a detached background worker, prints a **Job ID** and returns — usually in
-seconds. The worker downloads, extracts, installs and configures on its own, and
-survives the terminal (or the agent) that started it closing. There is
-deliberately no `--wait` flag.
+**Nothing here waits for a download.**
+
+A query finds the game and its links, starts a background worker, prints a
+**Job ID**, and returns. This usually takes seconds.
+
+The worker then downloads, unpacks, installs and configures on its own. It keeps
+going if you close the terminal, or if the agent that started it stops.
+
+There is no `--wait` flag. That is on purpose.
 
 ```cmd
 :: Download and install a pack -- returns a job id immediately
@@ -84,8 +96,10 @@ Download job spawned.  It will continue in the background.
   Check:    ps2tex --status e5d3ccc09480
 ```
 
-That block **is** success — the download is underway. Add `--json` to get the job
-id, serial, resolved links and log path as JSON instead of parsing it.
+**That block means success.** The download is underway.
+
+Add `--json` to get the job id, serial, links and log path as JSON, instead of
+reading that block.
 
 ### Command reference
 
@@ -95,9 +109,9 @@ id, serial, resolved links and log path as JSON instead of parsing it.
 | `dlps2tex "<SERIAL>"` | Same, but pinned to an exact serial (e.g. `SLES-50916`). |
 | `dlps2tex --list [--json]` | Texture packs already installed, with size and whether the INI is enabled. Local only, no network. |
 | `dlps2tex --status <jobId> [--json]` | Progress, current step, and the tail of the job log. |
-| `dlps2tex --clean [--all] [--dry-run] [--json]` | Reclaim working dirs and caches. See [Housekeeping](#housekeeping--clean). |
+| `dlps2tex --clean [--all] [--dry-run] [--json]` | Reclaim working dirs and caches. See [Housekeeping](#housekeeping). |
 | `dlps2tex --version` | Which build this is. Quote it in bug reports. |
-| `dlps2tex --interactive "<game>"` | Pick between regional matches yourself. Needs a human — never use from a script. |
+| `dlps2tex --interactive "<game>"` | Pick between regional matches yourself. Needs a person at the keyboard. Never use it from a script. |
 
 Path overrides, if PCSX2 is not where the defaults expect:
 `--textures-path`, `--gamesettings-path`, `--game-index`, `--node-id`.
@@ -108,16 +122,19 @@ Path overrides, if PCSX2 is not where the defaults expect:
 
 ### Chaining from a ROM download
 
-[`dlrom`](https://github.com/Saupernova13/dl-scripts) prints a `[HANDOFF]` line
-carrying the serial of the exact version it installed:
+[`dlrom`](https://github.com/Saupernova13/dl-scripts) downloads console ROMs.
+When it finishes a PS2 game it prints a `[HANDOFF]` line. That line carries the
+serial of the exact version it installed:
 
 ```
 [HANDOFF] platform=ps2 serial=SLUS-21569 title="..." texturecmd=dlps2tex "SLUS-21569"
 ```
 
-Feeding that serial in guarantees the textures match the dump you have — base vs
-FES, USA vs PAL. Both tools share the same job model, so a job id and `--clean`
-mean the same thing in each.
+Pass that serial to `dlps2tex`. The textures will then match the dump you have.
+Base or FES, USA or PAL, they line up.
+
+Both tools use the same job model. A job id and `--clean` mean the same thing in
+each.
 
 ---
 
@@ -148,8 +165,8 @@ Installed packs land in `<TexturesPath>\{SERIAL}\replacements\`, and
    Serials you already have installed are preferred, so `"The Sims 2"` resolves to
    *your* PAL copy rather than defaulting to the US one. If the name is unknown,
    [wiki.pcsx2.net](https://wiki.pcsx2.net/) is consulted as a fallback.
-2. **Archive.org index** is checked first — a hit here skips the browser entirely
-   and is much faster.
+2. **Check the Archive.org index.** This is done first. A hit here skips the
+   browser completely, which is much faster.
 3. **GBAtemp** otherwise: the subforum is searched, candidate threads are scored
    against the serial and game name, and the highest-scoring thread is opened.
    If it yields no links, the next candidate is tried.
@@ -158,12 +175,16 @@ Installed packs land in `<TexturesPath>\{SERIAL}\replacements\`, and
 
 ---
 
-## Housekeeping — `--clean`
+## Housekeeping
 
-Each job stages its download in `data/jobs/{id}/` — the archive plus its extracted
-copy, which for a texture pack is large. The worker deletes that directory on
-success *and* on failure, but a worker killed outright (reboot, task manager,
-power cut) never gets the chance. `--clean` sweeps up after it:
+Each job stages its download in `data/jobs/{id}/`. That folder holds the archive
+plus its unpacked copy. For a texture pack this is large.
+
+The worker deletes that folder when it succeeds, and also when it fails. But a
+worker that is killed outright never gets the chance. That happens on a reboot, a
+task manager kill, or a power cut.
+
+`--clean` sweeps up after it:
 
 | Category | What goes |
 |---|---|
@@ -171,13 +192,18 @@ power cut) never gets the chance. `--clean` sweeps up after it:
 | `cache` | Everything under `data/cache/`: the GameIndex parse, the Archive.org index, gbatemp thread lists, wiki lookups, and HTML saved from threads that yielded no links. All rebuild on demand. |
 | `job` | **Only with `--all`:** the `data/jobs/*.json` and `.log` history. |
 
-**Installed texture packs are never touched** — they live in PCSX2's `textures\`
+**Installed texture packs are never touched.** They live in PCSX2's `textures`
 folder, not here.
 
-Nothing belonging to a live job is removed either. `JobState` carries no pid, so
-"live" means status `pending`/`running` **and** touched within the last 2 hours;
-a job stuck at "running" since a crash months ago is treated as dead so its
-working dir does not become permanently unreclaimable. Skips are reported:
+Nothing belonging to a live job is removed either.
+
+A job record carries no process id. So "live" means two things at once: the
+status is `pending` or `running`, **and** the job was updated in the last 2 hours.
+
+That second test matters. A job left saying "running" since a crash months ago is
+treated as dead. Otherwise its working folder could never be reclaimed.
+
+Skips are reported:
 
 ```
 [DEBUG] Job 4c0a75bb3dcb says 'running' but has not moved since 2026-06-21T21:05:04Z - treating as dead.
@@ -188,12 +214,12 @@ working dir does not become permanently unreclaimable. Skips are reported:
 
 ## Background jobs
 
-Jobs run as a fully detached subprocess: closing the parent window, an agent
-timing out, or the session ending will not stop the download. State lives in
-`data/jobs/<jobId>.json`, output in `data/jobs/<jobId>.log`.
+Jobs run as a fully separate process. Closing the parent window will not stop the
+download. Neither will an agent timing out, or the session ending.
 
-Progress writes are throttled to roughly one per second, so polling every few
-seconds is cheap.
+State lives in `data/jobs/<jobId>.json`. Output goes to `data/jobs/<jobId>.log`.
+
+Progress is written about once per second. So polling every few seconds is cheap.
 
 | Field | Type | Description |
 |---|---|---|
@@ -213,29 +239,29 @@ seconds is cheap.
 
 ## Troubleshooting
 
-**"No matching texture pack found"** — no pack exists for that serial, or the
-title resolved to the wrong region. Try the serial directly
+**"No matching texture pack found."** Either no pack exists for that serial, or
+the title matched the wrong region. Try the serial directly
 (`dlps2tex "SLES-50916"`), or `--interactive` to choose between matches.
 
-**"No download links found in any post"** — the thread uses a file host that is
+**"No download links found in any post."** The thread uses a file host that is
 not recognised yet. The full thread HTML is saved to
 `data/cache/missing-links/`; please
 [open an issue](https://github.com/Saupernova13/ps2-texture-grabber/issues/new?template=missing_links.yml)
 with the link so the pattern can be added.
 
-**A job sits at the same percentage** — large packs on slow hosts are simply slow.
+**A job sits at the same percentage.** Large packs on slow hosts are simply slow.
 `dlps2tex --status <jobId>` shows the log tail; the log is intentionally quiet
 during the transfer, with progress going to the JSON instead.
 
-**Textures don't appear in-game** — check `dlps2tex --list` says `INI OK? True`
-for that serial, and confirm PCSX2 is loading the same `gamesettings` folder the
+**Textures do not appear in the game.** Check that `dlps2tex --list` says
+`INI OK? True` for that serial, and confirm PCSX2 is loading the same `gamesettings` folder the
 tool wrote to.
 
-**Cloudflare / GBAtemp failures** — make sure Edge or Chrome is installed. The
+**Cloudflare or GBAtemp failures.** Make sure Edge or Chrome is installed. The
 Archive.org path still works without a browser.
 
-**Something is behaving oddly after an interrupted run** — `dlps2tex --clean` and
-retry; a half-written cache is the usual cause.
+**Something behaves oddly after an interrupted run.** Run `dlps2tex --clean`, then
+try again. A half-written cache is the usual cause.
 
 ---
 

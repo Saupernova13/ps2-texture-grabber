@@ -1,7 +1,8 @@
 # Contributing to ps2-texture-grabber
 
-Thanks for taking an interest. This is a small, single-purpose Windows tool, so
-contributions are kept lightweight.
+Thanks for taking an interest.
+
+This is a small, single-purpose Windows tool. Contributions are kept lightweight.
 
 ## Building
 
@@ -17,15 +18,17 @@ To produce the same artifact a release ships:
 dotnet publish Ps2TextureGrabber.csproj -c Release -r win-x64 --self-contained -o bin\publish
 ```
 
-`shim/dlps2tex.cmd` finds `bin\publish\ps2tex.exe` on its own, so after a publish
-you can run the launcher straight out of the checkout:
+`shim/dlps2tex.cmd` finds `bin\publish\ps2tex.exe` on its own. So after a publish
+you can run the launcher straight from the checkout:
 
 ```powershell
 .\shim\dlps2tex.cmd --version
 ```
 
-**Requires .NET 10 SDK.** The tool is Windows-only by design — it writes into
-PCSX2's `%APPDATA%` layout, shells out to `7z.exe`, and publishes `win-x64`.
+**You need the .NET 10 SDK.**
+
+The tool is Windows-only on purpose. It writes into PCSX2's `%APPDATA%` folders,
+calls `7z.exe`, and publishes as `win-x64`.
 
 ## Repo shape
 
@@ -40,24 +43,25 @@ shim/dlps2tex.cmd      the launcher shipped in releases
 .github/workflows/     CI (build + smoke test) and Release (publish + zip)
 ```
 
-`AppPaths` is the only place that knows where anything lives. If you need a new
-file or directory, add it there rather than composing a path inline — `--clean`
-and `EnsureAll` both read from it, and a path invented somewhere else is a path
-neither of them will manage.
+`AppPaths` is the only place that knows where anything lives.
+
+If you need a new file or folder, add it there. Do not build a path inline.
+`--clean` and `EnsureAll` both read from `AppPaths`. A path invented anywhere else
+is a path neither of them will manage.
 
 ## Conventions
 
-- **No hardcoded personal paths.** Anything machine-specific is either a
-  `.settings` key, a command-line argument, or derived at runtime from
-  `%APPDATA%`. `.settings.example` must stay free of real usernames.
-- **Nothing may block on a download.** A query resolves links, spawns a detached
-  worker and returns a job id. There is deliberately no `--wait`: the tool is
-  driven by scripts and agents that must not be held for a multi-GB transfer.
-- **Fail soft on optional dependencies.** A missing 7-Zip, an unreachable host or
-  a dead cache should degrade with a clear message, never crash.
-- **Batch files stay CRLF.** `cmd.exe` resolves `goto` by byte offset; LF endings
-  make labels vanish once a file grows. `.gitattributes` pins this and CI checks
-  it.
+- **No hardcoded personal paths.** Anything machine-specific is a `.settings`
+  key, a command-line argument, or derived at runtime from `%APPDATA%`. Keep real
+  usernames out of `.settings.example`.
+- **Nothing may wait for a download.** A query finds links, starts a detached
+  worker, and returns a job id. There is no `--wait`, on purpose. Scripts and
+  agents drive this tool, and they must not be held up by a multi-GB transfer.
+- **Fail soft on optional dependencies.** A missing 7-Zip, an unreachable host, or
+  a dead cache should print a clear message and carry on. Never crash.
+- **Batch files stay CRLF.** `cmd.exe` finds a `goto` label by byte offset. LF
+  endings make labels vanish once a file grows. `.gitattributes` enforces this and
+  CI checks it.
 - **Never commit build output.** `bin/` and `obj/` are ignored. Releases carry
   the binary.
 - **Commits:** conventional style — `feat:`, `fix:`, `docs:`, `refactor:`,
@@ -77,22 +81,24 @@ There is no automated test suite yet. Before opening a PR:
    .\shim\dlps2tex.cmd "God of War"        # end to end; returns a job id
    .\shim\dlps2tex.cmd --status <jobId>
    ```
-3. If you changed scraping (`GbatempService`, `ArchiveOrgIndexService`,
-   `WikiService`) run a real query — those depend on live HTML that no unit test
-   would notice changing.
+3. If you changed scraping, run a real query. That covers `GbatempService`,
+   `ArchiveOrgIndexService` and `WikiService`. They depend on live HTML, and no
+   unit test would notice that changing.
 
 CI runs the build, publishes a self-contained binary, smoke-tests `--version`
 and `--clean --dry-run`, and verifies the shim's line endings.
 
 ## A note on the scrapers
 
-The GBAtemp path is the fragile part. It reads a live forum behind Cloudflare, so
-it will break when the site changes — that is expected, not a defect in your PR.
+The GBAtemp path is the fragile part. It reads a live forum behind Cloudflare. So
+it will break when the site changes. That is expected, not a fault in your PR.
 
 When a thread yields no links, the tool saves the full HTML to
-`data/cache/missing-links/` and tells you to add a matching pattern to
-`GbatempService.HostPatterns`. That dump is the intended starting point for a
-fix; please include the host name and an example URL in the PR.
+`data/cache/missing-links/`. It then tells you to add a matching pattern to
+`GbatempService.HostPatterns`.
+
+That saved HTML is the intended starting point for a fix. Please include the host
+name and an example URL in your PR.
 
 ## Releasing (maintainers)
 
@@ -103,12 +109,18 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The Release workflow stamps `1.2.3` into the assembly, verifies
-`ps2tex --version` reports exactly that, packages the exe + launcher + docs,
-unpacks the zip somewhere clean and drives it through the shim, then publishes
-the GitHub Release. A version that does not match `v<major>.<minor>.<patch>`
-fails the run rather than shipping something mislabelled. A tag containing `-`
-(e.g. `v1.3.0-rc1`) is marked as a pre-release.
+The Release workflow then does all of this:
+
+1. Stamps `1.2.3` into the assembly.
+2. Checks that the built exe reports exactly that version.
+3. Packages the exe, the launcher and the docs into a zip.
+4. Unpacks that zip somewhere clean and runs it through the shim.
+5. Publishes the GitHub Release.
+
+A tag not shaped like `v<major>.<minor>.<patch>` fails the run. That is better
+than shipping something mislabelled.
+
+A tag containing `-`, such as `v1.3.0-rc1`, is marked as a pre-release.
 
 ## Scope and legality
 
