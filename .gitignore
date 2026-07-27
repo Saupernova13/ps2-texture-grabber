@@ -1,37 +1,47 @@
-# User-local configuration
-.settings
+# ---------------------------------------------------------------------------
+# Build output
+#
+# Nothing under bin/ or obj/ belongs in git. This repo used to track
+# bin/publish/ps2tex.exe (plus its .pdb and playwright.ps1) so the launcher had
+# something to point at; releases carry the binary now, and CI rebuilds it from
+# source on every push.
+# ---------------------------------------------------------------------------
+bin/
+obj/
 
+# Leftover build directory from the old csharp/ project layout. The sources live
+# at the repo root; nothing in here is compiled (see the csproj's Compile Remove).
+csharp/
+
+# ---------------------------------------------------------------------------
 # Runtime data
-data/cache/
-data/jobs/
-data/bin/
+#
+# data/ is created next to the exe at startup (AppPaths.EnsureAll) and holds the
+# caches and job state. `ps2tex --clean` is the supported way to empty it.
+# ---------------------------------------------------------------------------
+data/
+
+# User-local configuration. .settings.example is committed; .settings is not -
+# it holds absolute paths into the user's own profile.
+.settings
 
 # Logs
 *.log
 
-# C# build artifacts (keep bin/publish tracked binaries)
-bin/Debug/
-bin/Release/
-obj/
+# Release staging, produced by the release workflow and by scripts/pack.ps1
+dist/
 
-# Playwright browser runtime and publish-time generated data
-bin/publish/.playwright/
-bin/publish/node/
-bin/publish/package/
-bin/publish/cache/
-bin/publish/jobs/
-bin/publish/data/
-
-# Leftover build directory from old csharp/ project layout
-csharp/
-
-# Visual Studio
+# ---------------------------------------------------------------------------
+# Tooling / OS / editors
+# ---------------------------------------------------------------------------
 .vs/
 *.user
 *.suo
-
-# OS / editor
-Thumbs.db
-desktop.ini
+*.userprefs
 .vscode/
 .idea/
+*.swp
+
+Thumbs.db
+desktop.ini
+.DS_Store
