@@ -1,0 +1,44 @@
+name: Download links not found
+description: A thread exists but ps2tex reports "No download links found"
+labels: [scraper]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This usually means the thread uses a file host ps2tex does not recognise yet.
+        When it happens the tool saves the full thread HTML to
+        `data/cache/missing-links/<thread-slug>.html` — open that file, find the real
+        download link, and paste it below. Adding a pattern is then a small change to
+        `GbatempService.HostPatterns`.
+
+  - type: input
+    id: game
+    attributes:
+      label: Game or serial you searched for
+      placeholder: SLES-52921
+    validations:
+      required: true
+
+  - type: input
+    id: thread
+    attributes:
+      label: GBAtemp thread URL
+    validations:
+      required: true
+
+  - type: input
+    id: link
+    attributes:
+      label: The download link in that thread
+      description: The host is what matters; redact any private token.
+      placeholder: https://example-host.com/file/abc123
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: ps2tex 1.0.0
+    validations:
+      required: true

@@ -1,0 +1,69 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most failures land in the job log. If a download went wrong, the log named
+        by `dlps2tex --status <jobId>` is the single most useful thing you can attach.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `dlps2tex --version`
+      placeholder: ps2tex 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: dlps2tex "God of War"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      description: Paste the full output. It is rendered as a code block automatically.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: joblog
+    attributes:
+      label: Job log (if a download was involved)
+      description: >
+        From `dlps2tex --status <jobId>`, or the file it points at under
+        `data/jobs/<jobId>.log`.
+      render: text
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Release zip
+        - Built from source
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: 7-Zip is installed and on PATH (needed for `.7z`/`.rar` packs)
+        - label: I tried `dlps2tex --clean` in case a stale cache was the cause
