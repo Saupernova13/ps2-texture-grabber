@@ -8,6 +8,15 @@
     <RootNamespace>Ps2TextureGrabber</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Optimize>true</Optimize>
+
+    <!-- Release CI overrides this from the git tag, via -p:Version=1.2.3.
+         It is what the "version" subcommand reports for a local build. -->
+    <Version>0.0.0-dev</Version>
+    <Product>ps2-texture-grabber</Product>
+    <Authors>Saupernova13</Authors>
+    <Description>Downloads HD texture packs for PS2 games and configures PCSX2 to load them.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Saupernova13/ps2-texture-grabber</RepositoryUrl>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="csharp/**" />

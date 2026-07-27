@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using Ps2TextureGrabber;
 using Ps2TextureGrabber.Models;
@@ -12,6 +13,7 @@ using Ps2TextureGrabber.Worker;
 //    ps2tex --list [options]
 //    ps2tex --status <jobId> [--json]
 //    ps2tex --clean [--all] [--dry-run] [--json]
+//    ps2tex --version
 //    ps2tex worker --job-file <path>       ← internal; spawned by JobService
 //
 //  Options:
@@ -28,6 +30,19 @@ using Ps2TextureGrabber.Worker;
 AppPaths.EnsureAll();
 
 var cli = Args.Parse(Environment.GetCommandLineArgs()[1..]);
+
+// ---- --version (answered before anything else; bug reports start here) ----
+if (cli.Version)
+{
+    var asm = Assembly.GetExecutingAssembly();
+    var ver = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+              ?? asm.GetName().Version?.ToString()
+              ?? "unknown";
+    // Strip the source-revision suffix the SDK appends (e.g. "1.2.3+abc1234").
+    var plus = ver.IndexOf('+');
+    Console.WriteLine($"ps2tex {(plus > 0 ? ver[..plus] : ver)}");
+    return 0;
+}
 
 // ---- worker subcommand (internal, no user-facing output) ----
 if (cli.Command == "worker")
@@ -350,6 +365,7 @@ internal sealed class Args
     public bool    List             { get; private set; }
     public string? Status           { get; private set; }
     public bool    Clean            { get; private set; }
+    public bool    Version          { get; private set; }
     public bool    All              { get; private set; }
     public bool    DryRun           { get; private set; }
     public bool    Interactive      { get; private set; }
@@ -372,6 +388,7 @@ internal sealed class Args
                 case "--list":        case "-l": a.List            = true; break;
                 case "--status":      case "-s": a.Status          = Next(argv, ref i); break;
                 case "--clean":       case "--clear": a.Clean      = true; break;
+                case "--version":     case "-v": a.Version          = true; break;
                 case "--all":                    a.All             = true; break;
                 case "--dry-run":     case "--dryrun": case "-n": a.DryRun = true; break;
                 case "--interactive": case "-i": a.Interactive     = true; break;
