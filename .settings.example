@@ -1,11 +1,26 @@
 # ps2-texture-grabber configuration
-# Copy this file to `.settings` and edit as needed.
-# Command-line parameters override these values.
+#
+# Copy this file to `.settings` next to ps2tex.exe and edit as needed.
+# Command-line arguments always override these values.
+#
+# EVERY KEY IS OPTIONAL. With no .settings file at all, ps2tex uses the EmuDeck
+# defaults below, resolved from %APPDATA% for whoever is running it - so on a
+# standard EmuDeck install you do not need this file.
 
-# PCSX2 install paths (EmuDeck defaults)
-TexturesPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\textures
-GamesettingsPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\gamesettings
-GameIndexPath=C:\Users\RaaViVi\AppData\Roaming\EmuDeck\Emulators\PCSX2-Qt\resources\GameIndex.yaml
+# --- PCSX2 install paths -----------------------------------------------------
+# Defaults (EmuDeck layout, %APPDATA% expanded at runtime):
+#   %APPDATA%\EmuDeck\Emulators\PCSX2-Qt\textures
+#   %APPDATA%\EmuDeck\Emulators\PCSX2-Qt\gamesettings
+#   %APPDATA%\EmuDeck\Emulators\PCSX2-Qt\resources\GameIndex.yaml
+#
+# Uncomment and set these only if PCSX2 lives somewhere else. Use absolute
+# paths - environment variables are NOT expanded in this file.
+#
+# TexturesPath=D:\Emulation\PCSX2\textures
+# GamesettingsPath=D:\Emulation\PCSX2\gamesettings
+# GameIndexPath=D:\Emulation\PCSX2\resources\GameIndex.yaml
 
-# GBAtemp subforum node ID (PCSX2 HD Texture Pack Group)
+# --- Source ------------------------------------------------------------------
+# GBAtemp subforum node id (PCSX2 HD Texture Pack Group). Change this only if
+# the forum is reorganised.
 GbatempNodeId=549
