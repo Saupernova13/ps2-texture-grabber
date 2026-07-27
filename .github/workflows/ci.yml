@@ -1,0 +1,70 @@
+name: CI
+
+# Every push and PR builds the project. The release workflow publishes the same
+# csproj with the same SDK, so a green CI run means a tag will produce a binary.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE', '.gitignore', '.gitattributes']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # windows-latest is not a preference: the tool is Windows-only (it drives
+    # PCSX2 under %APPDATA%, shells out to 7z.exe, and publishes win-x64).
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore Ps2TextureGrabber.csproj
+
+      - name: Build
+        run: dotnet build Ps2TextureGrabber.csproj -c Release --no-restore
+
+      # Proves the release artifact is actually producible, and that the exe runs
+      # far enough to answer a subcommand - a smoke test the compiler cannot give.
+      - name: Publish (self-contained win-x64)
+        run: >
+          dotnet publish Ps2TextureGrabber.csproj
+          -c Release -r win-x64 --self-contained
+          -o dist/ci
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = 'dist/ci/ps2tex.exe'
+          if (-not (Test-Path $exe)) { throw "publish produced no exe at $exe" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "--version exited $LASTEXITCODE" }
+          # --clean on a fresh checkout has nothing to do, but it exercises
+          # AppPaths.EnsureAll plus the whole CleanService discovery pass.
+          & $exe --clean --dry-run
+          if ($LASTEXITCODE -ne 0) { throw "--clean --dry-run exited $LASTEXITCODE" }
+
+      # The launcher is a .cmd full of `goto` labels. cmd.exe resolves those by
+      # byte offset, so LF endings make labels vanish once the file grows -
+      # silently, and only for whoever runs it. Catch it here instead.
+      - name: Check shim line endings are CRLF
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('shim/dlps2tex.cmd')
+          $lf = 0; $crlf = 0
+          for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 0x0A) {
+              if ($i -gt 0 -and $bytes[$i-1] -eq 0x0D) { $crlf++ } else { $lf++ }
+            }
+          }
+          Write-Host "shim/dlps2tex.cmd: $crlf CRLF, $lf bare LF"
+          if ($lf -gt 0) { throw "shim/dlps2tex.cmd has $lf bare LF line ending(s); it must be CRLF (see .gitattributes)" }

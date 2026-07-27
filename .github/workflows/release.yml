@@ -1,0 +1,182 @@
+name: Release
+
+# Tag a commit to ship it:
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# That publishes a self-contained win-x64 build, zips it together with the
+# dlps2tex launcher and the docs, and attaches the zip to a GitHub Release.
+# The tag is the single source of the version number - it is stamped into the
+# assembly, so `ps2tex --version` and the release always agree.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (no leading v), e.g. 1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # needed to create the release and upload the zip
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+                  '${{ inputs.version }}'
+               } else {
+                  '${{ github.ref_name }}' -replace '^v', ''
+               }
+          if ($v -notmatch '^\d+\.\d+\.\d+') {
+            throw "Version '$v' is not semver-shaped. Tag as v1.2.3."
+          }
+          "version=$v"   | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=v$v"      | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "Building version $v"
+
+      # Self-contained: the zip must run on a clean Windows box with no .NET
+      # installed. That is also why it is large - the runtime is in there.
+      - name: Publish
+        run: >
+          dotnet publish Ps2TextureGrabber.csproj
+          -c Release -r win-x64 --self-contained
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o dist/publish
+
+      - name: Verify the published exe
+        shell: pwsh
+        run: |
+          $reported = (& dist/publish/ps2tex.exe --version) -replace '^ps2tex\s+', ''
+          Write-Host "exe reports: $reported"
+          if ($reported -ne '${{ steps.ver.outputs.version }}') {
+            throw "exe reports '$reported' but the tag says '${{ steps.ver.outputs.version }}'"
+          }
+
+      # Stage exactly what a user needs: the exe and everything it loads, the
+      # launcher beside it (the shim looks for ps2tex.exe in its own folder
+      # first, so this layout is what makes `dlps2tex "Game"` work), and the
+      # docs. Runtime state (data/) is deliberately absent - the exe creates it.
+      - name: Stage the package
+        shell: pwsh
+        run: |
+          $stage = 'dist/stage/ps2tex'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item 'dist/publish/*' $stage -Recurse -Force
+          Copy-Item 'shim/dlps2tex.cmd' $stage -Force
+          Copy-Item 'README.md','LICENSE','.settings.example' $stage -Force
+          if (Test-Path 'CHANGELOG.md') { Copy-Item 'CHANGELOG.md' $stage -Force }
+
+          # A .pdb is a debugging symbol file; it doubles the download for users
+          # who will never load it in a debugger.
+          Get-ChildItem $stage -Filter *.pdb -Recurse | Remove-Item -Force
+
+          # Point first-time users at the two files that matter.
+          @"
+          ps2tex ${{ steps.ver.outputs.version }}
+          ================================================
+
+          QUICK START
+            1. Unzip this folder anywhere you like, e.g. C:\Tools\ps2tex
+            2. Add that folder to your PATH (optional, but it is what makes the
+               short command below work from any terminal).
+            3. Run:  dlps2tex "God of War"
+
+          WHAT IS IN HERE
+            dlps2tex.cmd   The launcher. Use this. It finds ps2tex.exe next to
+                           itself, so keep the two together.
+            ps2tex.exe     The tool itself. dlps2tex.cmd calls it for you.
+            *.dll          .NET runtime - this build needs no .NET installed.
+            .playwright\   Headless-browser driver, used to read GBAtemp.
+            README.md      Full documentation.
+            .settings.example
+                           Optional config. Copy to '.settings' ONLY if PCSX2
+                           is not in the default EmuDeck location.
+
+          COMMANDS
+            dlps2tex "Game Name"        download + install a texture pack
+            dlps2tex --list             show packs already installed
+            dlps2tex --status <jobId>   progress of a running download
+            dlps2tex --clean            reclaim temp files and caches
+            dlps2tex --version          which build this is
+
+          Downloads run in the background: the command returns a Job ID
+          immediately, then you poll it with --status.
+
+          Full docs: https://github.com/Saupernova13/ps2-texture-grabber
+          "@ | Set-Content "$stage/START-HERE.txt" -Encoding utf8
+
+      - name: Create the zip
+        id: zip
+        shell: pwsh
+        run: |
+          $name = 'ps2tex-${{ steps.ver.outputs.tag }}-win-x64.zip'
+          Compress-Archive -Path 'dist/stage/ps2tex/*' -DestinationPath "dist/$name" -CompressionLevel Optimal
+          $mb = [math]::Round((Get-Item "dist/$name").Length / 1MB, 1)
+          Write-Host "$name is $mb MB"
+          "name=$name"      | Out-File $env:GITHUB_OUTPUT -Append
+          "path=dist/$name" | Out-File $env:GITHUB_OUTPUT -Append
+          "size=$mb"        | Out-File $env:GITHUB_OUTPUT -Append
+
+      # Proves the zip is self-sufficient: unpack somewhere else entirely and
+      # drive the exe through the shim, exactly as a user would.
+      - name: Verify the zip works standalone
+        shell: pwsh
+        run: |
+          $test = Join-Path $env:RUNNER_TEMP 'ziptest'
+          Expand-Archive '${{ steps.zip.outputs.path }}' -DestinationPath $test -Force
+          Push-Location $test
+          try {
+            & .\dlps2tex.cmd --version
+            if ($LASTEXITCODE -ne 0) { throw "shim could not run ps2tex.exe from the unpacked zip" }
+            & .\dlps2tex.cmd --clean --dry-run
+            if ($LASTEXITCODE -ne 0) { throw "shim --clean failed from the unpacked zip" }
+          } finally { Pop-Location }
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ps2tex ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
+          generate_release_notes: true
+          files: ${{ steps.zip.outputs.path }}
+          body: |
+            ## Install
+
+            1. Download **${{ steps.zip.outputs.name }}** below (${{ steps.zip.outputs.size }} MB) and unzip it anywhere.
+            2. Add that folder to your `PATH`.
+            3. `dlps2tex "God of War"`
+
+            No .NET install required — the runtime is bundled. Keep `dlps2tex.cmd`
+            and `ps2tex.exe` in the same folder; the launcher finds the exe beside itself.
+
+            ```
+            dlps2tex "Game Name"        download + install a texture pack
+            dlps2tex --list             packs already installed
+            dlps2tex --status <jobId>   progress of a running download
+            dlps2tex --clean            reclaim temp files and caches
+            dlps2tex --version          which build this is
+            ```
+
+            Needs [7-Zip](https://www.7-zip.org/) on `PATH` for `.7z`/`.rar` packs
+            (`winget install 7zip.7zip`). See the
+            [README](https://github.com/Saupernova13/ps2-texture-grabber#readme) for
+            the full reference.
+
+            ---
