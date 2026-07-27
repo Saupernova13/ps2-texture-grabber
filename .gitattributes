@@ -1,0 +1,25 @@
+# Batch files MUST keep CRLF in the working tree.
+#
+# cmd.exe resolves `goto` by seeking to a byte offset. With LF-only line endings
+# that seek lands mid-line once the file is long enough, and the label is then
+# reported "not found" - a silent, positional failure that only appears after an
+# unrelated edit makes the file longer. shim/dlps2tex.cmd is full of goto labels.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# C# sources: normalise in the repo, CRLF on Windows checkouts.
+*.cs      text
+*.csproj  text
+*.sln     text eol=crlf
+
+*.md   text
+*.yml  text
+*.yaml text
+*.json text
+
+# Never mangle binaries.
+*.exe binary
+*.dll binary
+*.zip binary
+*.png binary
