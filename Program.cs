@@ -11,6 +11,7 @@ using Ps2TextureGrabber.Worker;
 //    ps2tex --query "Dragon Ball Z Budokai Tenkaichi 3" [options]
 //    ps2tex --list [options]
 //    ps2tex --status <jobId> [--json]
+//    ps2tex --clean [--all] [--dry-run] [--json]
 //    ps2tex worker --job-file <path>       ← internal; spawned by JobService
 //
 //  Options:
@@ -20,6 +21,8 @@ using Ps2TextureGrabber.Worker;
 //    --node-id <int>
 //    --interactive
 //    --json
+//    --all         (--clean) also delete finished job records and logs
+//    --dry-run     (--clean) report what would go, delete nothing
 // ============================================================================
 
 AppPaths.EnsureAll();
@@ -56,6 +59,68 @@ var nodeId           = cli.NodeId > 0 ? cli.NodeId
     : (settings.TryGetValue("GbatempNodeId", out var nStr) && int.TryParse(nStr, out var n) ? n : 549);
 
 var log = new Logger();
+
+// ============================================================================
+//  --clean
+//  Placed before --status/--list/--query: it carries no job id and no query.
+// ============================================================================
+if (cli.Clean)
+{
+    var cleaner = new CleanService(log, AppPaths.JobsDir, AppPaths.CacheDir);
+    var cleanResult = cleaner.Run(includeJobs: cli.All, dryRun: cli.DryRun);
+    var total   = cleanResult.Removed.Sum(t => t.Bytes) + cleanResult.Failed.Sum(t => t.Bytes);
+
+    if (cli.Json)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            removed = cleanResult.Removed.Select(t => t.Path),
+            failed  = cleanResult.Failed.Select(t => t.Path),
+            bytes   = cleanResult.Bytes,
+            dryRun  = cleanResult.DryRun,
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        return cleanResult.Failed.Count > 0 ? 1 : 0;
+    }
+
+    if (cleanResult.Removed.Count == 0 && cleanResult.Failed.Count == 0)
+    {
+        log.Success("Nothing to clean - ps2tex is holding no working dirs or caches.");
+        return 0;
+    }
+
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.WriteLine(cleanResult.DryRun ? "Would remove:" : "Removing:");
+    Console.ResetColor();
+    Console.WriteLine();
+
+    foreach (var t in cleanResult.Removed.Concat(cleanResult.Failed))
+    {
+        var ok = !cleanResult.Failed.Contains(t);
+        Console.ForegroundColor = ok ? ConsoleColor.Gray : ConsoleColor.Red;
+        Console.WriteLine($"{(ok ? ' ' : '!')} {t.Kind,-6} {CleanService.FormatBytes(t.Bytes),10}  {t.Path}");
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"           {t.Note}");
+        Console.ResetColor();
+    }
+    Console.WriteLine();
+
+    if (cleanResult.DryRun)
+    {
+        log.Info($"{cleanResult.Removed.Count} item(s), {CleanService.FormatBytes(total)} - dry run, nothing was deleted.");
+        log.Info("Re-run without --dry-run to remove them.");
+    }
+    else
+    {
+        log.Success($"Removed {cleanResult.Removed.Count} item(s), freed {CleanService.FormatBytes(cleanResult.Bytes)}.");
+        if (cleanResult.Failed.Count > 0)
+            log.Warn($"{cleanResult.Failed.Count} item(s) could not be removed (in use?).");
+    }
+    if (!cli.All)
+        log.Info("Job history was kept. Add --all to clear finished job records and logs too.");
+
+    return cleanResult.Failed.Count > 0 ? 1 : 0;
+}
 
 // ============================================================================
 //  --status
@@ -126,7 +191,8 @@ if (string.IsNullOrEmpty(cli.Query))
         "Missing argument.  Usage:\n" +
         "  ps2tex --query \"God of War\"\n" +
         "  ps2tex --list\n" +
-        "  ps2tex --status <jobId>");
+        "  ps2tex --status <jobId>\n" +
+        "  ps2tex --clean [--all] [--dry-run]");
     Console.ResetColor();
     return 1;
 }
@@ -283,6 +349,9 @@ internal sealed class Args
     public string? Query            { get; private set; }
     public bool    List             { get; private set; }
     public string? Status           { get; private set; }
+    public bool    Clean            { get; private set; }
+    public bool    All              { get; private set; }
+    public bool    DryRun           { get; private set; }
     public bool    Interactive      { get; private set; }
     public bool    Json             { get; private set; }
     public string? TexturesPath     { get; private set; }
@@ -302,6 +371,9 @@ internal sealed class Args
                 case "--query":       case "-q": a.Query           = Next(argv, ref i); break;
                 case "--list":        case "-l": a.List            = true; break;
                 case "--status":      case "-s": a.Status          = Next(argv, ref i); break;
+                case "--clean":       case "--clear": a.Clean      = true; break;
+                case "--all":                    a.All             = true; break;
+                case "--dry-run":     case "--dryrun": case "-n": a.DryRun = true; break;
                 case "--interactive": case "-i": a.Interactive     = true; break;
                 case "--json":                   a.Json            = true; break;
                 case "--textures-path":          a.TexturesPath    = Next(argv, ref i); break;

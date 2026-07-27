@@ -33,6 +33,11 @@ dlps2tex --status <jobId> --json    :: machine-readable
 :: List texture packs you already have installed locally
 dlps2tex --list
 dlps2tex --list --json
+
+:: Reclaim disk: abandoned job working dirs and rebuildable caches
+dlps2tex --clean
+dlps2tex --clean --dry-run          :: preview only
+dlps2tex --clean --all              :: also clear finished job records
 ```
 
 A spawn looks like this, and the shell prompt comes straight back:
@@ -54,9 +59,35 @@ expects a human at the keyboard — never use it from a script or an agent:
 dlps2tex --query "Final Fantasy X" --interactive
 ```
 
-> `dlrom` uses the same job model (`dlrom --status <jobId>`, `dlrom --list`), so a job id
-> means the same thing in both tools. See
-> [dl-scripts](https://github.com/Saupernova13/dl-scripts).
+> `dlrom` uses the same job model (`dlrom --status <jobId>`, `dlrom --list`,
+> `dlrom --clean`), so a job id — and a housekeeping command — means the same thing in both
+> tools. See [dl-scripts](https://github.com/Saupernova13/dl-scripts).
+
+## Housekeeping — `--clean`
+
+Each job stages its download in `data/jobs/{id}/` (the archive plus its extracted copy).
+The worker deletes that directory on success *and* on failure, but a worker that is killed
+outright — reboot, task manager, power cut — never gets the chance, and texture packs are
+large. `--clean` sweeps up after it, along with the caches:
+
+| Category | What goes |
+|---|---|
+| `work` | Orphaned `data/jobs/{id}/` working dirs — the downloaded archive and extracted copy. |
+| `cache` | Everything under `data/cache/`: the GameIndex parse, the Archive.org index, gbatemp thread lists, wiki lookups, and the HTML saved from threads that yielded no links. All rebuild on demand. |
+| `job` | **Only with `--all`:** the `data/jobs/*.json` and `.log` history. |
+
+Installed texture packs are **never** touched — they live in PCSX2's `textures\` folder,
+not here.
+
+Nothing belonging to a live job is removed. `JobState` carries no pid, so "live" means
+status `pending`/`running` **and** touched within the last 2 hours; a job stuck at
+"running" since a crash months ago is treated as dead, so its working dir does not become
+permanently unreclaimable. Skips are reported:
+
+```
+[DEBUG] Job 4c0a75bb3dcb says 'running' but has not moved since 2026-06-21T21:05:04Z - treating as dead.
+[INFO]  Keeping working dir for job a1b2c3d4e5f6 - it is still running.
+```
 
 ## Prerequisites
 
