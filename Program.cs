@@ -61,15 +61,9 @@ var settings = SettingsFile.Load(AppPaths.SettingsFile);
 string Get(string key, string? argVal, string? defaultVal = null)
     => argVal ?? settings.GetValueOrDefault(key) ?? defaultVal ?? string.Empty;
 
-var texturesPath     = Get("TexturesPath",    cli.TexturesPath,
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "EmuDeck", "Emulators", "PCSX2-Qt", "textures"));
-var gamesettingsPath = Get("GamesettingsPath", cli.GamesettingsPath,
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "EmuDeck", "Emulators", "PCSX2-Qt", "gamesettings"));
-var gameIndexPath    = Get("GameIndexPath",    cli.GameIndexPath,
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "EmuDeck", "Emulators", "PCSX2-Qt", "resources", "GameIndex.yaml"));
+var texturesPath     = Get("TexturesPath",     cli.TexturesPath,     Pcsx2Paths.Textures);
+var gamesettingsPath = Get("GamesettingsPath", cli.GamesettingsPath, Pcsx2Paths.GameSettings);
+var gameIndexPath    = Get("GameIndexPath",    cli.GameIndexPath,    Pcsx2Paths.GameIndex);
 var nodeId           = cli.NodeId > 0 ? cli.NodeId
     : (settings.TryGetValue("GbatempNodeId", out var nStr) && int.TryParse(nStr, out var n) ? n : 549);
 

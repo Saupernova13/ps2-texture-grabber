@@ -6,7 +6,7 @@ namespace Ps2TextureGrabber.Worker;
 
 /// <summary>
 /// Extracts archives to a target directory.
-/// Supports .zip (built-in), .7z and .rar (via 7z.exe).
+/// Supports .zip (built-in), .7z and .rar (via the 7-Zip CLI).
 /// </summary>
 public sealed class ArchiveExtractor
 {
@@ -25,11 +25,13 @@ public sealed class ArchiveExtractor
             return;
         }
 
-        // .7z / .rar — delegate to 7z.exe
+        // .7z / .rar — delegate to the 7-Zip CLI
         var sevenZip = Find7z()
             ?? throw new FileNotFoundException(
-                $"7-Zip (7z.exe) not found and archive is '{ext}'. " +
-                "Install via: winget install 7zip.7zip");
+                $"7-Zip not found and archive is '{ext}'. Install it with " +
+                (OperatingSystem.IsWindows()
+                    ? "'winget install 7zip.7zip'"
+                    : "your package manager (p7zip / 7zip); SteamOS ships it as /usr/bin/7z"));
 
         var psi = new ProcessStartInfo
         {
@@ -42,11 +44,11 @@ public sealed class ArchiveExtractor
         };
 
         var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start 7z.exe");
+            ?? throw new InvalidOperationException($"Failed to start {sevenZip}");
         proc.WaitForExit();
 
         if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"7z.exe exited with code {proc.ExitCode}");
+            throw new InvalidOperationException($"7-Zip exited with code {proc.ExitCode}");
     }
 
     /// <summary>
@@ -154,14 +156,31 @@ public sealed class ArchiveExtractor
     }
 
     // ---- helpers ----
+    // 7-Zip extracts the .7z and .rar packs most texture releases ship as, so a miss here
+    // is not cosmetic: the download succeeds and the install then fails.
+    //
+    // The binary is named differently per platform - 7z.exe on Windows, and on Linux any
+    // of 7z (p7zip), 7za (the standalone build) or 7zz (the official 7-Zip for Linux).
+    // Only Windows needs the Program Files sweep, because its installer does not put
+    // itself on PATH; every Linux packaging of it does.
     private static string? Find7z()
     {
+        var names = OperatingSystem.IsWindows()
+            ? new[] { "7z.exe" }
+            : new[] { "7z", "7zz", "7za" };
+
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "")
                             .Split(Path.PathSeparator))
         {
-            var full = Path.Combine(dir, "7z.exe");
-            if (File.Exists(full)) return full;
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+            foreach (var name in names)
+            {
+                var full = Path.Combine(dir, name);
+                if (File.Exists(full)) return full;
+            }
         }
+
+        if (!OperatingSystem.IsWindows()) return null;
 
         foreach (var candidate in new[]
         {

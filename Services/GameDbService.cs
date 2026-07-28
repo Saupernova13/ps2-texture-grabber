@@ -36,8 +36,19 @@ public sealed partial class GameDbService
             }
         }
 
+        // A missing GameIndex.yaml is normal, not fatal. PCSX2's Linux AppImage keeps it
+        // inside the read-only image and only populates resources/ once it has run, so a
+        // fresh install legitimately has no copy on disk. Degrade instead of throwing:
+        // --query still resolves serials through wiki.pcsx2.net, and --list still reports
+        // the packs it finds, just without pretty game names. Throwing here surfaced as an
+        // unhandled stack trace on the very first run of an otherwise working install.
         if (!File.Exists(gameIndexPath))
-            throw new FileNotFoundException($"GameIndex.yaml not found: {gameIndexPath}");
+        {
+            _log.Warn($"GameIndex.yaml not found: {gameIndexPath}");
+            _log.Warn("Continuing without the local game database - names resolve via wiki.pcsx2.net instead.");
+            _log.Warn("Launch PCSX2 once, or point --game-index at a copy, to enable offline serial lookup.");
+            return new List<GameEntry>();
+        }
 
         _log.Info("Parsing GameIndex.yaml (done once and cached)...");
         var entries = ParseYaml(gameIndexPath);
