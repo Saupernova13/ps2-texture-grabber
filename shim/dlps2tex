@@ -1,0 +1,56 @@
+#!/bin/sh
+# ===========================================================================
+#  dlps2tex - friendly launcher for the ps2tex binary (Linux / Steam Deck).
+#  The Windows equivalent is dlps2tex.cmd beside this file.
+#
+#  Put this file and ps2tex in the same folder, then add that folder to PATH:
+#
+#    export PATH="$PATH:/path/to/ps2-texture-grabber/bin/publish"
+#
+#  Usage: dlps2tex "Game Name" [--json] [--interactive]
+#         dlps2tex "SLUS-21569"          (a serial works too - the one dlrom hands off)
+#         dlps2tex --list [--json]
+#         dlps2tex --status <jobId> [--json]
+#         dlps2tex --clean [--all] [--dry-run] [--json]
+#
+#  The download always runs in the BACKGROUND: ps2tex resolves the game and
+#  its links, spawns a detached worker and returns a job id straight away.
+#  Follow it with --status.
+#
+#  A bare first argument is treated as the query, so `dlps2tex "God of War"`
+#  works without spelling out --query. Anything starting with '-' is passed
+#  through untouched.
+# ===========================================================================
+
+set -eu
+
+SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Beside this shim, then the repo's publish output, then PATH.
+PS2TEX=""
+for candidate in "$SHIM_DIR/ps2tex" "$SHIM_DIR/../bin/publish/ps2tex"; do
+    if [ -x "$candidate" ]; then PS2TEX=$candidate; break; fi
+done
+[ -n "$PS2TEX" ] || PS2TEX=$(command -v ps2tex 2>/dev/null || true)
+
+if [ -z "$PS2TEX" ]; then
+    echo "[ERROR] ps2tex binary not found." >&2
+    echo "Looked beside this script, in ../bin/publish, and on PATH." >&2
+    echo "Build it with:" >&2
+    echo "  dotnet publish -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o bin/publish" >&2
+    exit 1
+fi
+
+if [ $# -eq 0 ]; then
+    exec "$PS2TEX"
+fi
+
+# Promote a bare first argument to --query; leave every flag alone.
+case "$1" in
+    -*) exec "$PS2TEX" "$@" ;;
+    *)
+        query=$1
+        shift
+        exec "$PS2TEX" --query "$query" "$@"
+        ;;
+esac

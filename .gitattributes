@@ -23,3 +23,8 @@
 *.dll binary
 *.zip binary
 *.png binary
+
+# Shell launchers MUST be LF: a CRLF shebang makes the kernel look for an
+# interpreter named "/bin/sh".
+shim/dlps2tex text eol=lf
+*.sh           text eol=lf
