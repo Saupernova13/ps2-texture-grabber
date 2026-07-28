@@ -23,7 +23,11 @@ handled for you.
 
 ---
 
+Runs on **Windows and Linux (x64)**, including the **Steam Deck**.
+
 ## Install
+
+### Windows
 
 1. Download the latest **`ps2tex-vX.Y.Z-win-x64.zip`** from the
    [releases page](https://github.com/Saupernova13/ps2-texture-grabber/releases/latest)
@@ -34,21 +38,39 @@ handled for you.
    dlps2tex --version
    ```
 
-No .NET installation is needed. The runtime is bundled in the zip.
-
 Keep `dlps2tex.cmd` and `ps2tex.exe` in the same folder. The launcher looks for
 the exe beside itself.
 
-> Prefer building it yourself? See [Building from source](#building-from-source).
+### Linux and Steam Deck
+
+Build a self-contained binary - it needs no .NET installed on the target machine, which
+matters on an immutable OS like SteamOS:
+
+```sh
+dotnet publish -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o out
+chmod +x out/ps2tex
+./out/ps2tex --version
+```
+
+`data/` is created beside the binary, so put it somewhere writable - under `$HOME`, never
+on the read-only SteamOS root.
+
+No .NET installation is needed at runtime on either platform; the runtime is bundled.
+
+> Prefer building it yourself on Windows too? See [Building from source](#building-from-source).
 
 ### Prerequisites
 
 | | Why |
 |---|---|
-| **Windows 10/11 (x64)** | The tool writes into PCSX2's `%APPDATA%` layout. |
-| **PCSX2-Qt** | The target. Paths default to the EmuDeck layout and are overridable. |
-| **7-Zip** (`winget install 7zip.7zip`) | Needed for `.7z` and `.rar` packs. `.zip` works without it. |
-| **Edge or Chrome** | Used to read GBAtemp past its Cloudflare challenge. Pre-installed on Windows 11; the bundled Chromium is a less reliable fallback. |
+| **Windows 10/11 or Linux (x64)** | Writes into PCSX2's own layout - `%APPDATA%\EmuDeck\Emulators\PCSX2-Qt` on Windows, `~/.config/PCSX2` on Linux. Both are overridable. |
+| **PCSX2-Qt** | The target. Paths are detected per platform, including the Flatpak location. |
+| **7-Zip** | Needed for `.7z` and `.rar` packs; `.zip` works without it. `winget install 7zip.7zip` on Windows; on Linux any of `7z`, `7zz` or `7za` on `PATH` (SteamOS ships `/usr/bin/7z`). |
+| **A Chromium browser** | Used to read GBAtemp past its Cloudflare challenge. Edge or Chrome on Windows; on Linux the bundled Chromium is used, and every shared library it needs is already present on SteamOS. |
+
+On a Steam Deck, `GameIndex.yaml` lives inside PCSX2's AppImage and is not on disk until
+PCSX2 has run at least once. That is handled: serials resolve via wiki.pcsx2.net instead,
+with a warning rather than an error.
 
 ---
 
