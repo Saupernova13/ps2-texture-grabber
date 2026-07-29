@@ -10,6 +10,7 @@ REM  Usage: dlps2tex "Game Name" [--json] [--interactive]
 REM         dlps2tex "SLUS-21569"        (a serial works too)
 REM         dlps2tex --list [--json]
 REM         dlps2tex --status <jobId> [--json]
+REM         dlps2tex "Game Name" --dry-run   (resolve + show the pack, download nothing)
 REM         dlps2tex --clean [--all] [--dry-run] [--json]
 REM
 REM  The download always runs in the BACKGROUND: ps2tex resolves the game and

@@ -130,6 +130,7 @@ reading that block.
 | `dlps2tex "<game>"` | Resolve, download, install, configure. Prints a job id. |
 | `dlps2tex "<SERIAL>"` | Same, but pinned to an exact serial (e.g. `SLES-50916`). |
 | `dlps2tex --list [--json]` | Texture packs already installed, with size and whether the INI is enabled. Local only, no network. |
+| `dlps2tex "<game>" --dry-run` | Resolve the serial and pick a pack, then stop. Shows the source and the exact directories it would write to. Downloads nothing. |
 | `dlps2tex --status <jobId> [--json]` | Progress, current step, and the tail of the job log. |
 | `dlps2tex --clean [--all] [--dry-run] [--json]` | Reclaim working dirs and caches. See [Housekeeping](#housekeeping). |
 | `dlps2tex --version` | Which build this is. Quote it in bug reports. |

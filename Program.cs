@@ -306,7 +306,26 @@ else
     threadTitle = winnerThread.Title;
 }
 
-// 6. Spawn job
+// 6. Spawn job - unless this is a dry run, in which case everything above (resolving the
+// serial, picking a pack, finding usable links) was the point and the download is not.
+// --dry-run used to be honoured only by --clean, so on a query it parsed, was ignored, and
+// downloaded anyway: a flag that reads as "don't" doing exactly what it said not to.
+if (cli.DryRun)
+{
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.WriteLine("Dry run - nothing downloaded or installed.");
+    Console.ResetColor();
+    Console.WriteLine($"  Game:      {gameName} [{entry.Serial}] {entry.Region}");
+    Console.WriteLine($"  Pack:      {threadTitle}");
+    Console.WriteLine($"  Source:    {threadUrl}");
+    Console.WriteLine($"  Links:     {links.Count}");
+    Console.WriteLine($"  Would install to: {texturesPath}");
+    Console.WriteLine($"  Would write ini:  {gamesettingsPath}");
+    Console.WriteLine();
+    return 0;
+}
+
 var jobState = new JobState
 {
     Query            = cli.Query,

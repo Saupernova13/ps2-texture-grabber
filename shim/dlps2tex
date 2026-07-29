@@ -11,6 +11,7 @@
 #         dlps2tex "SLUS-21569"          (a serial works too - the one dlrom hands off)
 #         dlps2tex --list [--json]
 #         dlps2tex --status <jobId> [--json]
+#         dlps2tex "Game Name" --dry-run   (resolve + show the pack, download nothing)
 #         dlps2tex --clean [--all] [--dry-run] [--json]
 #
 #  The download always runs in the BACKGROUND: ps2tex resolves the game and
