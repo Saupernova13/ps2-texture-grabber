@@ -138,6 +138,19 @@ reading that block.
 Path overrides, if PCSX2 is not where the defaults expect:
 `--textures-path`, `--gamesettings-path`, `--game-index`, `--node-id`.
 
+You should rarely need the first two. **PCSX2 lets the user relocate any of its folders and
+records that in the `[Folders]` section of its own `PCSX2.ini`, and this tool reads it** —
+absolute values as given, relative ones resolved against the PCSX2 data root, exactly as
+PCSX2 resolves them. A Steam Deck with
+
+```ini
+[Folders]
+Textures = ../../Documents/pcsx2/textures
+```
+
+installs to `~/Documents/pcsx2/textures`, nowhere near `~/.config/PCSX2`. Check what it
+resolved to with `--dry-run`, which prints both target directories before doing anything.
+
 > `dlps2tex` is the friendly launcher; `ps2tex.exe` is the tool. Everything above
 > works against the exe directly too, but the game name then needs `--query`:
 > `ps2tex --query "God of War"`.
