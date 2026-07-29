@@ -57,6 +57,14 @@ public sealed class JobService
         var exePath = Process.GetCurrentProcess().MainModule?.FileName
             ?? throw new InvalidOperationException("Cannot determine current exe path");
 
+        // On Linux the usual caller is `ssh deck 'dlps2tex ...'`, and a plain child does not
+        // outlive that session. See SpawnDetachedLinux for why setsid alone is not enough.
+        if (!OperatingSystem.IsWindows() && TrySpawnViaSystemdRun(exePath, jobFile, logFile, state.Id, out var unitPid))
+        {
+            _log.Success($"Spawned worker (PID {unitPid}) for job {state.Id}");
+            return new SpawnResult(state.Id, jobFile, logFile, unitPid);
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName               = exePath,
@@ -82,6 +90,94 @@ public sealed class JobService
 
         _log.Success($"Spawned worker (PID {proc.Id}) for job {state.Id}");
         return new SpawnResult(state.Id, jobFile, logFile, proc.Id);
+    }
+
+    /// <summary>
+    /// Start the worker as a transient systemd user unit, so it survives the SSH session
+    /// that started it. Returns false if systemd-run or a user bus is unavailable, leaving
+    /// the caller to spawn an ordinary child.
+    ///
+    /// A plain background child is not enough on a systemd host configured with
+    /// KillUserProcesses=yes (SteamOS ships exactly that): logind kills the whole session
+    /// CGROUP on logout, and neither a new session id from setsid nor closed stdio takes a
+    /// process out of that cgroup. The worker dies the moment `ssh deck '...'` returns,
+    /// leaving the job at "pending" with an empty log and nothing explaining why.
+    ///
+    /// A --user unit runs under the user manager (user@UID.service), a different cgroup
+    /// that session teardown does not touch. To survive the *last* session ending as well,
+    /// the user manager must persist: `loginctl enable-linger &lt;user&gt;`.
+    /// </summary>
+    private bool TrySpawnViaSystemdRun(string exePath, string jobFile, string logFile, string jobId, out int pid)
+    {
+        pid = 0;
+        try
+        {
+            var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
+            if (string.IsNullOrEmpty(runtimeDir) || !File.Exists(Path.Combine(runtimeDir, "bus")))
+                return false;   // no user bus to talk to
+
+            var unit = $"ps2tex-{jobId}";
+            var psi = new ProcessStartInfo
+            {
+                FileName               = "systemd-run",
+                UseShellExecute        = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+            };
+            foreach (var arg in new[]
+                     {
+                         "--user", "--collect", "--quiet", $"--unit={unit}",
+                         $"--property=StandardOutput=append:{logFile}",
+                         $"--property=StandardError=append:{logFile}",
+                         "--property=StandardInput=null",
+                         exePath, "worker", "--job-file", jobFile,
+                     })
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return false;
+            proc.WaitForExit(10_000);
+            if (!proc.HasExited || proc.ExitCode != 0) return false;
+
+            pid = ReadUnitMainPid(unit);
+            return true;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return false;   // systemd-run absent or unusable; caller falls back
+        }
+    }
+
+    /// <summary>
+    /// MainPID of a transient user unit. Best-effort: the worker is a grandchild of systemd
+    /// rather than of this process, and the pid is only ever displayed, so 0 is survivable.
+    /// </summary>
+    private static int ReadUnitMainPid(string unit)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName               = "systemctl",
+                UseShellExecute        = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+            };
+            foreach (var arg in new[] { "--user", "show", "-p", "MainPID", "--value", $"{unit}.service" })
+                psi.ArgumentList.Add(arg);
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return 0;
+            var text = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit(5_000);
+            return int.TryParse(text, out var value) ? value : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     // -------------------------------------------------------------------------
