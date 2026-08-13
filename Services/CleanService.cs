@@ -7,17 +7,15 @@ namespace Ps2TextureGrabber.Services;
 /// <c>ps2tex --clean</c>: reclaim the disk the tool itself is holding.
 ///
 /// Three kinds of leftover accumulate under <c>data/</c>:
-///   • job working dirs — <c>data/jobs/{id}/</c> holds the downloaded archive and its
-///     extracted copy. <see cref="Worker.WorkerRunner"/> deletes it on both success and
-///     failure, but a worker that is killed outright (reboot, task manager) never gets to.
-///     Those are texture-pack-sized, so they are the reason this command exists.
-///   • caches — the GameIndex parse, the Archive.org index, gbatemp thread lists, wiki
-///     lookups, and the HTML dumps saved when a thread yields no links. All rebuild.
+///   • job working dirs — <c>data/jobs/{id}/</c>, the downloaded archive and its extracted
+///     copy. <see cref="Worker.WorkerRunner"/> deletes these on success and failure alike,
+///     but a worker killed outright never gets to. Texture-pack-sized, hence this command.
+///   • caches — GameIndex, the Archive.org index, thread lists, wiki lookups, HTML dumps.
 ///   • job records — the JSON + log history, kept unless --all.
 ///
-/// Nothing belonging to a live job is ever removed. Because <see cref="JobState"/> carries
-/// no pid, "live" is Status pending/running AND touched within <see cref="StaleAfter"/> —
-/// otherwise a worker killed mid-download would protect its own garbage forever.
+/// Nothing belonging to a live job is ever removed. <see cref="JobState"/> carries no pid,
+/// so "live" means pending/running AND touched within <see cref="StaleAfter"/> - otherwise a
+/// worker killed mid-download would protect its own garbage forever.
 /// </summary>
 public sealed class CleanService
 {
@@ -65,12 +63,10 @@ public sealed class CleanService
             }
         }
 
-        // 2. Caches. The whole directory is rebuildable, so it is swept wholesale rather
-        //    than by a list of filenames that would drift as services are added.
-        //
-        //    Empty subdirectories are skipped: AppPaths.EnsureAll recreates wiki\ and
-        //    missing-links\ after every run, so offering them again would make --clean
-        //    report two removals and free zero bytes every single time it is run.
+        // 2. Caches. Swept wholesale - the whole directory rebuilds, and a filename list
+        //    would drift as services are added. Empty subdirectories are skipped, because
+        //    EnsureAll recreates wiki\ and missing-links\ after every run and offering them
+        //    again would report two removals and free zero bytes on every single run.
         if (Directory.Exists(_cacheDir))
         {
             foreach (var entry in Directory.EnumerateFileSystemEntries(_cacheDir))
@@ -107,9 +103,9 @@ public sealed class CleanService
     }
 
     /// <summary>
-    /// Ids of jobs a worker is plausibly still running. Anything pending/running but
-    /// untouched for <see cref="StaleAfter"/> is treated as dead, so a killed worker's
-    /// multi-GB working dir does not become permanently unreclaimable.
+    /// Ids of jobs a worker is plausibly still running. Pending/running but untouched for
+    /// <see cref="StaleAfter"/> counts as dead, so a killed worker's multi-GB working dir
+    /// does not become permanently unreclaimable.
     /// </summary>
     private HashSet<string> LiveJobIds()
     {
@@ -173,9 +169,8 @@ public sealed class CleanService
             }
         }
 
-        // The cache dirs are recreated empty so the next run does not have to special-case
-        // their absence (EnsureAll does this at startup too, but --clean should leave the
-        // tree in the shape the app expects rather than half-missing).
+        // Recreated empty so --clean leaves the tree in the shape the app expects rather
+        // than half-missing.
         if (!dryRun) AppPaths.EnsureAll();
 
         return new Result(removed, failed, removed.Sum(t => t.Bytes), dryRun);

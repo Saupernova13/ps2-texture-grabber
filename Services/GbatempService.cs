@@ -8,17 +8,14 @@ using Ps2TextureGrabber.Models;
 namespace Ps2TextureGrabber.Services;
 
 /// <summary>
-/// Browses the GBAtemp PCSX2 HD Texture Pack subforum, scores thread titles
-/// against a serial/game-name query, and extracts download links from the
-/// winning thread.
+/// Browses the GBAtemp PCSX2 HD Texture Pack subforum, scores thread titles against a
+/// serial/game-name query, and extracts download links from the winning thread.
 ///
 /// Discovery order:
 ///   1. Local thread cache (JSON, built up over time).
-///   2. RSS feed — plain HTTP, no Playwright, no auth. Covers the ~40 most
-///      recently active threads. Results are merged into the cache.
-///   3. Playwright forum-page scrape (parallel) — used only when the cache
-///      has no confident match. Results are also merged into the cache so
-///      future searches skip this step.
+///   2. RSS feed - plain HTTP, no Playwright. The ~40 most recently active threads.
+///   3. Playwright forum-page scrape, only when the cache has no confident match.
+/// Both 2 and 3 merge into the cache, so later searches can skip them.
 /// </summary>
 public sealed partial class GbatempService
 {
@@ -49,9 +46,8 @@ public sealed partial class GbatempService
     // Thread discovery
 
     /// <summary>
-    /// Returns all candidate threads sorted by score (desc). All returned
-    /// threads score within 10 points of the best match so the caller can
-    /// try each in order when the top thread has no download links.
+    /// Candidate threads by score, descending, all within 10 points of the best - so the
+    /// caller can try each in turn when the top thread has no download links.
     /// </summary>
     public async Task<List<ForumThread>> FindThreadCandidatesAsync(
         string  serial,
@@ -129,8 +125,8 @@ public sealed partial class GbatempService
 
         try
         {
-            // Send browser-like headers — the RSS endpoint sits behind the same
-            // Cloudflare edge as the forum and rejects the default .NET UA (403).
+            // The RSS endpoint sits behind the same Cloudflare edge as the forum and 403s
+            // the default .NET UA.
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -166,8 +162,8 @@ public sealed partial class GbatempService
         }
         catch (Exception ex)
         {
-            // Non-fatal: on a miss the caller falls through to the Playwright
-            // forum scrape, which shares the browser's Cloudflare clearance.
+            // Non-fatal: the caller falls through to the Playwright scrape, which has the
+            // browser's Cloudflare clearance.
             _log.Warn($"  RSS fetch failed ({ex.Message}) — will rely on forum scrape");
             return [];
         }
@@ -222,9 +218,8 @@ public sealed partial class GbatempService
     private List<(ForumThread Thread, int Score)> ScoreAndFilter(
         IEnumerable<ForumThread> threads, string serial, string? gameName, string? userQuery)
     {
-        // Anchor identity on what the user asked for; fall back to the resolved
-        // game name. Numbers from EITHER source are required so the resolved
-        // game's sequel number is enforced even when the user omitted it.
+        // Anchor on what the user asked for, falling back to the resolved game name. Numbers
+        // from EITHER source count, so a sequel number is enforced even when the user omitted it.
         var anchorSource = !string.IsNullOrWhiteSpace(userQuery)
             ? userQuery
             : (gameName ?? string.Empty);
@@ -260,11 +255,9 @@ public sealed partial class GbatempService
     // -------------------------------------------------------------------------
     // Game-identity gate
     //
-    // A thread is eligible only if its title plausibly refers to the resolved
-    // game. Without this, a stale-cache thread for an unrelated game (e.g. a
-    // "Baroque HD Texture Pack") scored on generic quality words alone and was
-    // selected for a "Persona 3" query. Ranking still uses ScoreThread; this
-    // decides eligibility.
+    // A thread is eligible only if its title plausibly refers to the resolved game. Without
+    // this, a "Baroque HD Texture Pack" thread scored on generic quality words alone and won a
+    // "Persona 3" query. Ranking still uses ScoreThread; this only decides eligibility.
 
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
         { "the", "of", "a", "an", "and", "to", "in", "for", "vs", "de", "la" };
@@ -315,9 +308,9 @@ public sealed partial class GbatempService
         int matched = distinctive.Count(titleTokens.Contains);
         if (matched == 0) return false;
 
-        // Two+ distinctive words is strong on its own. A single shared word
-        // (e.g. "god" in both "God of War" and "God Hand") only counts when a
-        // specific sequel number also matched, or the game name is a single word.
+        // Two+ distinctive words is strong on its own. A single shared word ("god" in both
+        // "God of War" and "God Hand") only counts when a sequel number also matched, or the
+        // game name is a single word.
         return matched >= 2
             || requiredNumbers.Count > 0
             || matched == distinctive.Count;
@@ -400,15 +393,13 @@ public sealed partial class GbatempService
     // =========================================================================
     // Download link extraction
     //
-    // Strategy (newest post first; stops when any post yields links):
+    // Newest post first, stopping at the first post that yields links:
     //
-    //   2a. Direct known-host URL patterns (MEGA, Archive, GDrive, MediaFire,
-    //       Yandex, GitHub /releases/download/ direct assets).
-    //   2b. GitHub REPO ROOT links (github.com/owner/repo) -> GitHub REST API
-    //       for latest release -> assets + release body external links ->
-    //       README fallback.
-    //   2c. Unknown / short hrefs in the post -> HTTP redirect-chain resolve
-    //       -> re-classify against known hosts.
+    //   2a. Direct known-host URLs (MEGA, Archive, GDrive, MediaFire, Yandex, GitHub
+    //       /releases/download/ assets).
+    //   2b. GitHub repo roots -> REST API for the latest release -> assets, release-body
+    //       external links, then README.
+    //   2c. Unknown or short hrefs -> resolve the redirect chain -> re-classify.
     // =========================================================================
 
     public async Task<List<DownloadLink>> GetDownloadLinksAsync(

@@ -8,23 +8,11 @@ using Ps2TextureGrabber.Worker;
 // ============================================================================
 //  ps2tex — top-level argument dispatch
 //
-//  Usage:
 //    ps2tex --query "Dragon Ball Z Budokai Tenkaichi 3" [options]
-//    ps2tex --list [options]
-//    ps2tex --status <jobId> [--json]
-//    ps2tex --clean [--all] [--dry-run] [--json]
-//    ps2tex --version
+//    ps2tex --list | --status <jobId> | --clean [--all] [--dry-run] | --version
 //    ps2tex worker --job-file <path>       ← internal; spawned by JobService
 //
-//  Options:
-//    --textures-path <path>
-//    --gamesettings-path <path>
-//    --game-index <path>
-//    --node-id <int>
-//    --interactive
-//    --json
-//    --all         (--clean) also delete finished job records and logs
-//    --dry-run     (--clean) report what would go, delete nothing
+//  See README.md for the option list.
 // ============================================================================
 
 AppPaths.EnsureAll();
@@ -306,10 +294,8 @@ else
     threadTitle = winnerThread.Title;
 }
 
-// 6. Spawn job - unless this is a dry run, in which case everything above (resolving the
-// serial, picking a pack, finding usable links) was the point and the download is not.
-// --dry-run used to be honoured only by --clean, so on a query it parsed, was ignored, and
-// downloaded anyway: a flag that reads as "don't" doing exactly what it said not to.
+// 6. Spawn job - unless this is a dry run, where everything above (resolving the serial,
+// picking a pack, finding usable links) was the point and the download is not.
 if (cli.DryRun)
 {
     Console.WriteLine();
