@@ -72,9 +72,8 @@ public sealed class JobService
             CreateNoWindow         = true,
             UseShellExecute        = false,
             WindowStyle            = ProcessWindowStyle.Hidden,
-            // Redirect stdio so the worker does not inherit the parent console
-            // handles — otherwise the cmd launcher (~\.openclaw\dlps2tex.cmd)
-            // stays attached to the background worker and the terminal hangs.
+            // Redirect stdio so the worker does not inherit the parent console handles -
+            // otherwise the cmd launcher stays attached to it and the terminal hangs.
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
@@ -93,19 +92,17 @@ public sealed class JobService
     }
 
     /// <summary>
-    /// Start the worker as a transient systemd user unit, so it survives the SSH session
-    /// that started it. Returns false if systemd-run or a user bus is unavailable, leaving
-    /// the caller to spawn an ordinary child.
+    /// Start the worker as a transient systemd user unit, so it survives the SSH session that
+    /// started it. False if systemd-run or a user bus is unavailable, leaving the caller to
+    /// spawn an ordinary child.
     ///
-    /// A plain background child is not enough on a systemd host configured with
-    /// KillUserProcesses=yes (SteamOS ships exactly that): logind kills the whole session
-    /// CGROUP on logout, and neither a new session id from setsid nor closed stdio takes a
-    /// process out of that cgroup. The worker dies the moment `ssh deck '...'` returns,
-    /// leaving the job at "pending" with an empty log and nothing explaining why.
+    /// A plain background child is not enough where KillUserProcesses=yes (SteamOS ships
+    /// exactly that): logind kills the whole session CGROUP on logout, and neither setsid's
+    /// new session id nor closed stdio leaves that cgroup. The worker dies the moment
+    /// `ssh deck '...'` returns, leaving the job at "pending" with an empty log.
     ///
-    /// A --user unit runs under the user manager (user@UID.service), a different cgroup
-    /// that session teardown does not touch. To survive the *last* session ending as well,
-    /// the user manager must persist: `loginctl enable-linger &lt;user&gt;`.
+    /// A --user unit runs under user@UID.service, a different cgroup teardown does not touch.
+    /// To survive the *last* session too: `loginctl enable-linger &lt;user&gt;`.
     /// </summary>
     private bool TrySpawnViaSystemdRun(string exePath, string jobFile, string logFile, string jobId, out int pid)
     {
@@ -151,8 +148,8 @@ public sealed class JobService
     }
 
     /// <summary>
-    /// MainPID of a transient user unit. Best-effort: the worker is a grandchild of systemd
-    /// rather than of this process, and the pid is only ever displayed, so 0 is survivable.
+    /// MainPID of a transient user unit. Best-effort - the worker is a grandchild of systemd,
+    /// and the pid is only ever displayed, so 0 is survivable.
     /// </summary>
     private static int ReadUnitMainPid(string unit)
     {

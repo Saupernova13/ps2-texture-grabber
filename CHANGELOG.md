@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `--search "<query>"` shows every matching GBAtemp thread — score, URL and the
+  download links it contains — without downloading anything. `--browse` lists
+  every thread on the texture pack subforum, scraping all pages rather than
+  just the RSS window. Both support `--json`; `--browse --refresh` forces a
+  live re-scrape instead of reusing a listing under 12 hours old.
 - `--clean` reclaims abandoned job working directories (the staged archive plus
   its extracted copy, left behind when a worker is killed) and the rebuildable
   caches. `--all` also clears finished job records; `--dry-run` previews.
@@ -21,6 +26,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - MIT licence, contributing guide, issue and PR templates, `.editorconfig`.
 
 ### Changed
+- GBAtemp page fetches are much faster: a small pool of browser contexts is
+  reused (Cloudflare clearance only happens once per context) and the
+  10-second NetworkIdle wait is gone. Fetches are paced at ~0.25 requests/s,
+  the rate the Cloudflare edge demonstrably tolerates - faster bursts land in
+  unsolvable challenge loops. Searches refresh page 1 via the browser when
+  the RSS feed 403s, so new threads are never missed.
 - `.settings.example` no longer contains a real Windows username, and documents
   that every key is optional on a standard EmuDeck install.
 - `.gitignore` now excludes all build output.

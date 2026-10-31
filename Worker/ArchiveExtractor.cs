@@ -156,13 +156,10 @@ public sealed class ArchiveExtractor
     }
 
     // ---- helpers ----
-    // 7-Zip extracts the .7z and .rar packs most texture releases ship as, so a miss here
-    // is not cosmetic: the download succeeds and the install then fails.
-    //
-    // The binary is named differently per platform - 7z.exe on Windows, and on Linux any
-    // of 7z (p7zip), 7za (the standalone build) or 7zz (the official 7-Zip for Linux).
-    // Only Windows needs the Program Files sweep, because its installer does not put
-    // itself on PATH; every Linux packaging of it does.
+    // 7-Zip extracts the .7z and .rar packs most texture releases ship as, so a miss here is
+    // not cosmetic: the download succeeds and the install then fails. The binary is named
+    // differently per platform - 7z.exe on Windows, and 7z, 7za or 7zz on Linux. Only Windows
+    // needs the Program Files sweep, because its installer does not put itself on PATH.
     private static string? Find7z()
     {
         var names = OperatingSystem.IsWindows()

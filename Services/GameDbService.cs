@@ -36,12 +36,10 @@ public sealed partial class GameDbService
             }
         }
 
-        // A missing GameIndex.yaml is normal, not fatal. PCSX2's Linux AppImage keeps it
-        // inside the read-only image and only populates resources/ once it has run, so a
-        // fresh install legitimately has no copy on disk. Degrade instead of throwing:
-        // --query still resolves serials through wiki.pcsx2.net, and --list still reports
-        // the packs it finds, just without pretty game names. Throwing here surfaced as an
-        // unhandled stack trace on the very first run of an otherwise working install.
+        // A missing GameIndex.yaml is normal, not fatal: PCSX2's Linux AppImage keeps it
+        // inside the read-only image and only populates resources/ once it has run. Degrade
+        // instead of throwing - --query still resolves serials through wiki.pcsx2.net and
+        // --list still reports packs, just without pretty game names.
         if (!File.Exists(gameIndexPath))
         {
             _log.Warn($"GameIndex.yaml not found: {gameIndexPath}");
@@ -153,9 +151,8 @@ public sealed partial class GameDbService
                 _        => 0
             };
 
-            // Penalise trial/demo/preview/kiosk/sample versions heavily so the
-            // commercial release always wins over a trial with the same name.
-            // Check both Name and NameEn — the marker may appear in either.
+            // Penalise trial/demo/preview/kiosk/sample heavily so the commercial release wins.
+            // Both Name and NameEn, because the marker may appear in either.
             bool isDemo = (e.Name   is not null && DemoTitleRx().IsMatch(e.Name))
                        || (e.NameEn is not null && DemoTitleRx().IsMatch(e.NameEn));
             int demopenalty = isDemo ? -500 : 0;

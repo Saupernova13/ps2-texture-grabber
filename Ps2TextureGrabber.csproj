@@ -24,5 +24,7 @@
   <ItemGroup>
     <PackageReference Include="MegaApiClient" Version="1.10.5" />
     <PackageReference Include="Microsoft.Playwright" Version="1.59.0" />
+    <!-- MegaApiClient pulls Newtonsoft.Json 10.0.2 (GHSA-5crp-9r3c-p9vr); pin a fixed version. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 </Project>

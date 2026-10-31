@@ -8,6 +8,8 @@ REM  remembering where the exe lives.
 REM
 REM  Usage: dlps2tex "Game Name" [--json] [--interactive]
 REM         dlps2tex "SLUS-21569"        (a serial works too)
+REM         dlps2tex --search "Game Name" [--json]   (all matches + links, no download)
+REM         dlps2tex --browse [--json] [--refresh]    (every GBAtemp thread, no download)
 REM         dlps2tex --list [--json]
 REM         dlps2tex --status <jobId> [--json]
 REM         dlps2tex "Game Name" --dry-run   (resolve + show the pack, download nothing)
@@ -62,6 +64,10 @@ if /i "%~1"=="-status"   goto :passthru
 if /i "%~1"=="--clean"   goto :passthru
 if /i "%~1"=="-clean"    goto :passthru
 if /i "%~1"=="--clear"   goto :passthru
+if /i "%~1"=="--search"  goto :passthru
+if /i "%~1"=="-search"   goto :passthru
+if /i "%~1"=="--browse"  goto :passthru
+if /i "%~1"=="-browse"   goto :passthru
 if /i "%~1"=="--version" goto :passthru
 
 REM --- otherwise arg 1 is the game name (or serial) and the rest are flags ---
@@ -86,12 +92,18 @@ exit /b %ERRORLEVEL%
 :usage
 echo Usage: dlps2tex "Game Name" [--json] [--interactive]
 echo        dlps2tex "SLUS-21569"
+echo        dlps2tex --search "Game Name" [--json]
+echo        dlps2tex --browse [--json] [--refresh]
 echo        dlps2tex --list [--json]
 echo        dlps2tex --status ^<jobId^> [--json]
 echo        dlps2tex --clean [--all] [--dry-run] [--json]
 echo.
 echo The download runs in the background and returns a job id immediately.
 echo Poll it with:  dlps2tex --status ^<jobId^>
+echo.
+echo --search lists every matching GBAtemp thread with its links. Nothing downloads.
+echo --browse lists every thread on the GBAtemp texture pack forum. Nothing downloads.
+echo         Cached listings under 12h old are reused; --refresh re-scrapes.
 echo.
 echo --clean deletes abandoned job working dirs and rebuildable caches.
 echo         --all also clears finished job records, --dry-run only previews.

@@ -1,33 +1,21 @@
 #!/bin/sh
 # ===========================================================================
 #  dlps2tex - friendly launcher for the ps2tex binary (Linux / Steam Deck).
-#  The Windows equivalent is dlps2tex.cmd beside this file.
-#
-#  Put this file and ps2tex in the same folder, then add that folder to PATH:
-#
-#    export PATH="$PATH:/path/to/ps2-texture-grabber/bin/publish"
-#
-#  Usage: dlps2tex "Game Name" [--json] [--interactive]
-#         dlps2tex "SLUS-21569"          (a serial works too - the one dlrom hands off)
-#         dlps2tex --list [--json]
-#         dlps2tex --status <jobId> [--json]
-#         dlps2tex "Game Name" --dry-run   (resolve + show the pack, download nothing)
-#         dlps2tex --clean [--all] [--dry-run] [--json]
-#
-#  The download always runs in the BACKGROUND: ps2tex resolves the game and
-#  its links, spawns a detached worker and returns a job id straight away.
-#  Follow it with --status.
+#  The Windows equivalent is dlps2tex.cmd beside this file. Put both this and
+#  ps2tex in one folder and add that folder to PATH.
 #
 #  A bare first argument is treated as the query, so `dlps2tex "God of War"`
-#  works without spelling out --query. Anything starting with '-' is passed
-#  through untouched.
+#  works without spelling out --query - as does a serial, which is what dlrom
+#  hands off. Anything starting with '-' is passed through untouched, so
+#  `dlps2tex --search "God of War"` and `dlps2tex --browse` work as-is.
+#
+#  See README.md for the full command list.
 # ===========================================================================
 
 set -eu
 
-# Resolve this script through any symlinks before locating its siblings. Putting a
-# launcher on PATH means linking it into ~/.local/bin, and `dirname $0` would then name
-# the link's directory - where the ps2tex binary does not live.
+# Resolve symlinks first: a launcher linked into ~/.local/bin would otherwise resolve
+# `dirname $0` to the link's directory, where the ps2tex binary does not live.
 SELF=$0
 while [ -L "$SELF" ]; do
     link=$(readlink -- "$SELF")
