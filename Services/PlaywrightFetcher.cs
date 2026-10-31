@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using Microsoft.Playwright;
 
 namespace Ps2TextureGrabber.Services;
@@ -5,6 +6,15 @@ namespace Ps2TextureGrabber.Services;
 /// <summary>
 /// Uses a real Chromium browser (Edge when available, then Chrome, then bundled)
 /// to bypass Cloudflare JS challenges natively.
+///
+/// A small pool of browser contexts is shared by every page fetch. Each context
+/// keeps its own Cloudflare clearance cookie, so a warmed context loads pages
+/// almost instantly - while parallel fetches use separate contexts instead of
+/// hammering one session (Cloudflare serialises same-session requests).
+///
+/// Fetches are also paced: bursting more than a couple of requests per second at
+/// the Cloudflare edge trips its bot detection and lands the session in an
+/// unsolvable challenge loop. A 4s spacing keeps the whole scrape safe.
 /// </summary>
 public sealed class PlaywrightFetcher : IAsyncDisposable
 {
@@ -14,20 +24,38 @@ public sealed class PlaywrightFetcher : IAsyncDisposable
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
-    private readonly Logger      _log;
+    /// <summary>Contexts in the pool; each one keeps its own CF clearance cookie.</summary>
+    private const int ContextPoolSize = 3;
+
+    /// <summary>Minimum spacing between page-fetch starts, in milliseconds.
+    /// Empirically, the Cloudflare edge in front of GBAtemp serves unsolvable
+    /// "Just a moment" challenges at higher request rates (~0.5/s) but passes
+    /// everything at the old ~0.25 requests/s the tool has always used.</summary>
+    private const long MinFetchIntervalMs = 4000;
+
+    private readonly Logger        _log;
     private readonly SemaphoreSlim _initLock = new(1, 1);
+    private readonly SemaphoreSlim _pacer    = new(1, 1);
+    private long _lastFetchTick;
+
     private IPlaywright? _playwright;
     private IBrowser?    _browser;
+
+    private readonly List<IBrowserContext> _contexts = [];
+    private readonly Channel<IBrowserContext> _freeContexts =
+        Channel.CreateBounded<IBrowserContext>(ContextPoolSize);
 
     public PlaywrightFetcher(Logger log) => _log = log;
 
     // -------------------------------------------------------------------------
     // Page fetch
 
-    public async Task<PageResult> GetPageAsync(string url, int maxTimeoutMs = 60_000)
+    public async Task<PageResult> GetPageAsync(string url, int maxTimeoutMs = 30_000)
     {
+        await PaceAsync().ConfigureAwait(false);
+
         _log.Debug($"Playwright -> GET {url}");
-        var ctx  = await CreateContextAsync().ConfigureAwait(false);
+        var ctx  = await AcquireContextAsync().ConfigureAwait(false);
         var page = await ctx.NewPageAsync().ConfigureAwait(false);
         try
         {
@@ -43,81 +71,115 @@ public sealed class PlaywrightFetcher : IAsyncDisposable
         finally
         {
             await page.CloseAsync().ConfigureAwait(false);
-            await ctx.CloseAsync().ConfigureAwait(false);
+            ReleaseContext(ctx);
         }
     }
 
     // -------------------------------------------------------------------------
     // Internals
 
-    private async Task<IBrowserContext> CreateContextAsync()
+    /// <summary>Spaces fetch starts at least MinFetchIntervalMs apart. The very first
+    /// call passes immediately.</summary>
+    private async Task PaceAsync()
     {
-        var browser = await GetBrowserAsync().ConfigureAwait(false);
-        var ctx = await browser.NewContextAsync(new BrowserNewContextOptions
+        await _pacer.WaitAsync().ConfigureAwait(false);
+        try
         {
-            UserAgent    = UserAgent,
-            ViewportSize = new ViewportSize { Width = 1280, Height = 800 },
-        }).ConfigureAwait(false);
-
-        // Suppress the webdriver flag that bot-detection scripts check.
-        await ctx.AddInitScriptAsync(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined })")
-            .ConfigureAwait(false);
-
-        return ctx;
+            var now  = Environment.TickCount64;
+            var wait = MinFetchIntervalMs - (now - Interlocked.Read(ref _lastFetchTick));
+            if (wait > 0)
+                await Task.Delay(TimeSpan.FromMilliseconds(wait)).ConfigureAwait(false);
+            Interlocked.Exchange(ref _lastFetchTick, Environment.TickCount64);
+        }
+        finally
+        {
+            _pacer.Release();
+        }
     }
 
-    private async Task<IBrowser> GetBrowserAsync()
+    /// <summary>Takes a free context, creating a new one (up to the pool limit) when
+    /// none is free. Creation is serialised; callers only ever queue on the channel.</summary>
+    private async Task<IBrowserContext> AcquireContextAsync()
     {
-        if (_browser is not null) return _browser;
+        if (_freeContexts.Reader.TryRead(out var free)) return free;
 
         await _initLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_browser is not null) return _browser;
+            if (_freeContexts.Reader.TryRead(out free)) return free;
 
-            _playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-
-            var commonArgs = new[]
+            if (_contexts.Count < ContextPoolSize)
             {
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            };
-
-            // Prefer Edge (pre-installed on Windows 11), then Chrome, then bundled Chromium.
-            foreach (var (channel, label) in new[] { ("msedge", "Edge"), ("chrome", "Chrome") })
-            {
-                try
+                var browser = _browser ?? await LaunchBrowserAsync().ConfigureAwait(false);
+                var ctx = await browser.NewContextAsync(new BrowserNewContextOptions
                 {
-                    _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-                    {
-                        Channel  = channel,
-                        Headless = true,
-                        Args     = commonArgs,
-                    }).ConfigureAwait(false);
-                    _log.Debug($"Playwright: using {label}");
-                    return _browser;
-                }
-                catch { }
-            }
+                    UserAgent    = UserAgent,
+                    ViewportSize = new ViewportSize { Width = 1280, Height = 800 },
+                }).ConfigureAwait(false);
 
-            _log.Warn("Edge/Chrome not found — falling back to bundled Chromium (may not bypass Cloudflare)");
-            _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-            {
-                Headless = true,
-                Args     = commonArgs,
-            }).ConfigureAwait(false);
+                // Suppress the webdriver flag that bot-detection scripts check.
+                await ctx.AddInitScriptAsync(
+                    "Object.defineProperty(navigator, 'webdriver', { get: () => undefined })")
+                    .ConfigureAwait(false);
+
+                _contexts.Add(ctx);
+                return ctx;
+            }
         }
         finally
         {
             _initLock.Release();
         }
 
+        // Pool is full: wait for whichever context is returned first.
+        return await _freeContexts.Reader.ReadAsync().ConfigureAwait(false);
+    }
+
+    private void ReleaseContext(IBrowserContext ctx) => _freeContexts.Writer.TryWrite(ctx);
+
+    private async Task<IBrowser> LaunchBrowserAsync()
+    {
+        _playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+
+        var commonArgs = new[]
+        {
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        };
+
+        // Prefer Edge (pre-installed on Windows 11), then Chrome, then bundled Chromium.
+        foreach (var (channel, label) in new[] { ("msedge", "Edge"), ("chrome", "Chrome") })
+        {
+            try
+            {
+                _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                {
+                    Channel  = channel,
+                    Headless = true,
+                    Args     = commonArgs,
+                }).ConfigureAwait(false);
+                _log.Debug($"Playwright: using {label}");
+                return _browser;
+            }
+            catch { }
+        }
+
+        _log.Warn("Edge/Chrome not found — falling back to bundled Chromium (may not bypass Cloudflare)");
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            Args     = commonArgs,
+        }).ConfigureAwait(false);
         return _browser;
     }
 
-    // Waits for Cloudflare's "Just a moment…" interstitial to resolve.
+    // Waits for Cloudflare's "Just a moment…" interstitial to resolve. Once the title
+    // changes, the browser is either past the challenge or there never was one; a
+    // DOMContentLoaded wait then covers the post-challenge reload.
+    //
+    // Deliberately no NetworkIdle wait: forum pages keep async requests alive for a
+    // long time and would stall every fetch for the full idle timeout.
     private static async Task WaitForCloudflareAsync(IPage page, int maxTimeoutMs)
     {
         try
@@ -137,7 +199,7 @@ public sealed class PlaywrightFetcher : IAsyncDisposable
 
         try
         {
-            await page.WaitForLoadStateAsync(LoadState.NetworkIdle,
+            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded,
                 new PageWaitForLoadStateOptions { Timeout = 10_000 })
                 .ConfigureAwait(false);
         }
@@ -146,6 +208,8 @@ public sealed class PlaywrightFetcher : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        foreach (var ctx in _contexts)
+            try { await ctx.CloseAsync().ConfigureAwait(false); } catch { }
         if (_browser is not null)
             try { await _browser.CloseAsync().ConfigureAwait(false); } catch { }
 

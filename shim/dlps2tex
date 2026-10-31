@@ -6,7 +6,8 @@
 #
 #  A bare first argument is treated as the query, so `dlps2tex "God of War"`
 #  works without spelling out --query - as does a serial, which is what dlrom
-#  hands off. Anything starting with '-' is passed through untouched.
+#  hands off. Anything starting with '-' is passed through untouched, so
+#  `dlps2tex --search "God of War"` and `dlps2tex --browse` work as-is.
 #
 #  See README.md for the full command list.
 # ===========================================================================

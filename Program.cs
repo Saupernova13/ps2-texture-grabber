@@ -9,6 +9,8 @@ using Ps2TextureGrabber.Worker;
 //  ps2tex — top-level argument dispatch
 //
 //    ps2tex --query "Dragon Ball Z Budokai Tenkaichi 3" [options]
+//    ps2tex --search "<query>"       all matches + links, download nothing
+//    ps2tex --browse                 every GBAtemp thread, download nothing
 //    ps2tex --list | --status <jobId> | --clean [--all] [--dry-run] | --version
 //    ps2tex worker --job-file <path>       ← internal; spawned by JobService
 //
@@ -56,6 +58,48 @@ var nodeId           = cli.NodeId > 0 ? cli.NodeId
     : (settings.TryGetValue("GbatempNodeId", out var nStr) && int.TryParse(nStr, out var n) ? n : 549);
 
 var log = new Logger();
+
+// Resolves a query to a GameEntry: locally installed games first, then GameIndex.yaml,
+// then wiki.pcsx2.net as a last resort. Shared by --query and --search.
+async Task<GameEntry?> ResolveQueryAsync(string query, bool interactive)
+{
+    var gameDbSvc = new GameDbService(log);
+    var gameDb    = gameDbSvc.Load(gameIndexPath, AppPaths.GameDbCache);
+
+    // Prefer locally installed game — check gamesettings INIs and texture folders
+    // so that e.g. "The Sims 2" resolves to the user's PAL serial, not the US default.
+    var pcsx2Svc     = new Pcsx2Service(log);
+    var localSerials = pcsx2Svc.GetLocalGameSerials(gamesettingsPath, texturesPath);
+
+    if (localSerials.Count > 0)
+    {
+        var localDb = gameDb.Where(e => localSerials.Contains(e.Serial)).ToList();
+        GameEntry? local = null;
+        if (localDb.Count > 0)
+            local = gameDbSvc.Resolve(localDb, query, interactive);
+        if (local is not null)
+        {
+            log.Success($"[LOCAL] Matched to locally installed game {local.Serial} ({local.DisplayName}, {local.Region})");
+            return local;
+        }
+    }
+
+    // Fall back to full GameIndex.yaml search (region-biased toward NTSC-U)
+    var entry = gameDbSvc.Resolve(gameDb, query, interactive);
+    if (entry is not null) return entry;
+
+    log.Warn($"No local GameDB match for '{query}' — trying wiki.pcsx2.net...");
+    var wikiSerial = await new WikiService(log, AppPaths.WikiCacheDir)
+        .GetSerialForNameAsync(query);
+    if (wikiSerial is not null)
+    {
+        var bySerial = gameDbSvc.FindBySerial(gameDb, wikiSerial)
+            ?? new GameEntry(wikiSerial, query, query, null);
+        log.Success($"[WIKI] Resolved '{query}' -> {wikiSerial}");
+        return bySerial;
+    }
+    return null;
+}
 
 // ============================================================================
 //  --clean
@@ -179,6 +223,157 @@ if (cli.List)
 }
 
 // ============================================================================
+//  --browse  (list every thread on the GBAtemp forum, download nothing)
+// ============================================================================
+if (cli.Browse)
+{
+    log.Info($"Listing every thread on GBAtemp node {nodeId} — nothing is downloaded");
+
+    await using var fetcher = new PlaywrightFetcher(log);
+    var gbatemp = new GbatempService(fetcher, log);
+    var threads = await gbatemp.ListAllThreadsAsync(nodeId, cli.Refresh);
+
+    if (threads.Count == 0)
+    {
+        log.Warn("No threads found");
+        return 1;
+    }
+
+    if (cli.Json)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            nodeId,
+            threadCount = threads.Count,
+            threads = threads.Select(t => new { threadId = t.ThreadId, slug = t.Slug, title = t.Title, url = t.Url }),
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.WriteLine($"GBAtemp PCSX2 HD Texture Pack forum (node {nodeId}) — {threads.Count} thread(s):");
+    Console.WriteLine();
+    Console.ResetColor();
+    for (int i = 0; i < threads.Count; i++)
+    {
+        Console.WriteLine($"{i + 1,4}. {threads[i].Title}");
+        Console.WriteLine($"       {threads[i].Url}");
+    }
+    Console.WriteLine();
+    return 0;
+}
+
+// ============================================================================
+//  --search  (every match + link details, download nothing)
+// ============================================================================
+if (!string.IsNullOrEmpty(cli.Search))
+{
+    var query = cli.Search;
+    log.Info($"Searching GBAtemp for '{query}' — nothing is downloaded");
+
+    var match = await ResolveQueryAsync(query, cli.Interactive);
+    if (match is null)
+    {
+        log.Error($"Could not resolve '{query}' to a PS2 serial");
+        return 1;
+    }
+    log.Success($"Searching GBAtemp for {match.DisplayName} [{match.Serial}]");
+    var matchName = match.DisplayName;
+
+    // Bonus: the Archive.org index is checked first during a real download, so surface
+    // a hit here too. Cached, so this costs nothing extra.
+    var archiveHit = await new ArchiveOrgIndexService(log, AppPaths.ArchiveIndexCache)
+        .FindBySerialAsync(match.Serial);
+    if (archiveHit is not null)
+        log.Info($"Archive.org index hit: {archiveHit.Url}");
+
+    await using var fetcher = new PlaywrightFetcher(log);
+    var gbatemp = new GbatempService(fetcher, log);
+    var scored = await gbatemp.SearchThreadsAsync(match.Serial, matchName, nodeId, userQuery: query);
+
+    if (scored.Count == 0)
+    {
+        log.Warn($"No matching threads on GBAtemp for '{matchName}' [{match.Serial}]");
+        log.Info($"Browse manually: https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/");
+        return 1;
+    }
+
+    // Pull the download links out of every matching thread so each result shows its
+    // details. Only the thread pages are fetched; no file is downloaded.
+    log.Info($"Fetching download links for {scored.Count} matching thread(s)...");
+    var sem = new SemaphoreSlim(3, 3);
+    var details = await Task.WhenAll(scored.Select(async s =>
+    {
+        await sem.WaitAsync();
+        try
+        {
+            // dumpMissingHtml: false - a search is not a failed download, so no
+            // triage dumps land in the missing-links cache.
+            return (s.Thread, s.Score,
+                Links: await gbatemp.GetDownloadLinksAsync(s.Thread.Url, s.Thread,
+                    dumpMissingHtml: false));
+        }
+        catch (Exception ex)
+        {
+            // A Cloudflare block on one thread must not sink the whole search;
+            // report it and show the rest of the results.
+            log.Warn($"Could not read thread \"{s.Thread.Title}\": {ex.Message}");
+            return (s.Thread, s.Score, Links: new List<DownloadLink>());
+        }
+        finally { sem.Release(); }
+    }));
+
+    var results = details
+        .Select(d => new
+        {
+            title = d.Thread.Title,
+            url   = d.Thread.Url,
+            score = d.Score,
+            links = d.Links.Select(l => new { host = l.Host, url = l.Url }).ToList(),
+        })
+        .ToList();
+
+    if (cli.Json)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            query,
+            serial     = match.Serial,
+            game       = matchName,
+            region     = match.Region,
+            archiveOrg = archiveHit?.Url,
+            results,
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+
+    Console.WriteLine();
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.WriteLine($"Matches for \"{query}\" -> {matchName} [{match.Serial}] ({match.Region}) — {results.Count} result(s):");
+    Console.WriteLine();
+    Console.ResetColor();
+    for (int i = 0; i < results.Count; i++)
+    {
+        var r = results[i];
+        Console.WriteLine($"{i + 1,4}. {r.title}  (score {r.score})");
+        Console.WriteLine($"       {r.url}");
+        if (r.links.Count == 0)
+        {
+            Console.WriteLine("       No download links found");
+        }
+        else
+        {
+            Console.WriteLine($"       {r.links.Count} link(s):");
+            foreach (var l in r.links)
+                Console.WriteLine($"         {l.host,-9} {l.url}");
+        }
+        Console.WriteLine();
+    }
+    return 0;
+}
+
+// ============================================================================
 //  --query  (download)
 // ============================================================================
 if (string.IsNullOrEmpty(cli.Query))
@@ -187,6 +382,8 @@ if (string.IsNullOrEmpty(cli.Query))
     Console.Error.WriteLine(
         "Missing argument.  Usage:\n" +
         "  ps2tex --query \"God of War\"\n" +
+        "  ps2tex --search \"God of War\"   (all matches + links, nothing downloaded)\n" +
+        "  ps2tex --browse                 (every GBAtemp thread, nothing downloaded)\n" +
         "  ps2tex --list\n" +
         "  ps2tex --status <jobId>\n" +
         "  ps2tex --clean [--all] [--dry-run]");
@@ -199,42 +396,8 @@ log.Info($"  Query:        {cli.Query}");
 log.Debug($"  Textures:     {texturesPath}");
 log.Debug($"  Gamesettings: {gamesettingsPath}");
 
-// 1. Resolve name -> serial
-var gameDbSvc = new GameDbService(log);
-var gameDb    = gameDbSvc.Load(gameIndexPath, AppPaths.GameDbCache);
-
-// 1a. Prefer locally installed game — check gamesettings INIs and texture folders
-//     so that e.g. "The Sims 2" resolves to the user's PAL serial, not the US default.
-var pcsx2Svc    = new Pcsx2Service(log);
-var localSerials = pcsx2Svc.GetLocalGameSerials(gamesettingsPath, texturesPath);
-GameEntry? entry = null;
-
-if (localSerials.Count > 0)
-{
-    var localDb = gameDb.Where(e => localSerials.Contains(e.Serial)).ToList();
-    if (localDb.Count > 0)
-        entry = gameDbSvc.Resolve(localDb, cli.Query, cli.Interactive);
-    if (entry is not null)
-        log.Success($"[LOCAL] Matched to locally installed game {entry.Serial} ({entry.DisplayName}, {entry.Region})");
-}
-
-// 1b. Fall back to full GameIndex.yaml search (region-biased toward NTSC-U)
-if (entry is null)
-    entry = gameDbSvc.Resolve(gameDb, cli.Query, cli.Interactive);
-
-if (entry is null)
-{
-    log.Warn($"No local GameDB match for '{cli.Query}' — trying wiki.pcsx2.net...");
-    var wikiSerial = await new WikiService(log, AppPaths.WikiCacheDir)
-        .GetSerialForNameAsync(cli.Query);
-    if (wikiSerial is not null)
-    {
-        entry = gameDbSvc.FindBySerial(gameDb, wikiSerial)
-            ?? new GameEntry(wikiSerial, cli.Query, cli.Query, null);
-        log.Success($"[WIKI] Resolved '{cli.Query}' -> {wikiSerial}");
-    }
-}
-
+// 1. Resolve name -> serial (local install first, then GameIndex.yaml, then wiki)
+var entry = await ResolveQueryAsync(cli.Query, cli.Interactive);
 if (entry is null)
 {
     log.Error($"Could not resolve '{cli.Query}' to a PS2 serial");
@@ -369,6 +532,9 @@ internal sealed class Args
     public bool    DryRun           { get; private set; }
     public bool    Interactive      { get; private set; }
     public bool    Json             { get; private set; }
+    public string? Search           { get; private set; }
+    public bool    Browse           { get; private set; }
+    public bool    Refresh          { get; private set; }
     public string? TexturesPath     { get; private set; }
     public string? GamesettingsPath { get; private set; }
     public string? GameIndexPath    { get; private set; }
@@ -392,6 +558,9 @@ internal sealed class Args
                 case "--dry-run":     case "--dryrun": case "-n": a.DryRun = true; break;
                 case "--interactive": case "-i": a.Interactive     = true; break;
                 case "--json":                   a.Json            = true; break;
+                case "--search":                  a.Search          = Next(argv, ref i); break;
+                case "--browse":      case "-b":  a.Browse          = true; break;
+                case "--refresh":                  a.Refresh         = true; break;
                 case "--textures-path":          a.TexturesPath    = Next(argv, ref i); break;
                 case "--gamesettings-path":      a.GamesettingsPath= Next(argv, ref i); break;
                 case "--game-index":             a.GameIndexPath   = Next(argv, ref i); break;

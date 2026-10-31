@@ -106,6 +106,13 @@ dlps2tex --clean
 dlps2tex --clean --dry-run           :: preview, delete nothing
 dlps2tex --clean --all               :: also clear finished job records
 
+:: Search and browse GBAtemp without downloading anything
+dlps2tex --search "God of War"       :: every match, scored, with its links
+dlps2tex --search "God of War" --json
+dlps2tex --browse                    :: every thread on the texture pack forum
+dlps2tex --browse --json
+dlps2tex --browse --refresh          :: force a live re-scrape (listings under 12h are cached)
+
 dlps2tex --version
 ```
 
@@ -130,6 +137,8 @@ reading that block.
 | `dlps2tex "<game>"` | Resolve, download, install, configure. Prints a job id. |
 | `dlps2tex "<SERIAL>"` | Same, but pinned to an exact serial (e.g. `SLES-50916`). |
 | `dlps2tex --list [--json]` | Texture packs already installed, with size and whether the INI is enabled. Local only, no network. |
+| `dlps2tex --search "<game>" [--json]` | Every matching GBAtemp thread, scored, with its URL and the download links it contains. Downloads nothing. |
+| `dlps2tex --browse [--json] [--refresh]` | Every thread on the PCSX2 HD texture pack subforum. Reuses a listing scraped in the last 12 hours; `--refresh` forces a live re-scrape. Downloads nothing. |
 | `dlps2tex "<game>" --dry-run` | Resolve the serial and pick a pack, then stop. Shows the source and the exact directories it would write to. Downloads nothing. |
 | `dlps2tex --status <jobId> [--json]` | Progress, current step, and the tail of the job log. |
 | `dlps2tex --clean [--all] [--dry-run] [--json]` | Reclaim working dirs and caches. See [Housekeeping](#housekeeping). |

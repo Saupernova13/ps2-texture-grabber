@@ -57,6 +57,137 @@ public sealed partial class GbatempService
         string? userQuery = null,
         CancellationToken ct = default)
     {
+        var candidates = await DiscoverScoredThreadsAsync(
+            serial, gameName, nodeId, maxPages, userQuery, ct).ConfigureAwait(false);
+        if (candidates.Count == 0) return [];
+
+        int best = candidates[0].Score;
+        var result = candidates
+            .Where(x => x.Score >= best - 10)
+            .Select(x => x.Thread)
+            .ToList();
+
+        _log.Success($"Selected thread: \"{result[0].Title}\" (score {best})");
+        if (result.Count > 1)
+            _log.Info($"  {result.Count - 1} fallback candidate(s) within 10 pts");
+
+        return result;
+    }
+
+    /// <summary>
+    /// Every matching thread with its score, best first. Unlike FindThreadCandidatesAsync
+    /// nothing is trimmed to the top band - a search UI can show the whole result set.
+    /// </summary>
+    public Task<List<(ForumThread Thread, int Score)>> SearchThreadsAsync(
+        string  serial,
+        string? gameName,
+        int     nodeId    = 549,
+        int     maxPages  = 5,
+        string? userQuery = null,
+        CancellationToken ct = default)
+        => DiscoverScoredThreadsAsync(serial, gameName, nodeId, maxPages, userQuery, ct);
+
+    /// <summary>
+    /// Every thread on the forum node - all pages, not just the RSS window or the first few.
+    /// The last page number is read off page 1's page nav, so the listing is complete even
+    /// for large forums. Everything found merges into the thread cache.
+    ///
+    /// A listing that was fully scraped less than ListingCacheWindow ago is served straight
+    /// from the cache - re-scraping 30+ forum pages every time is slow for no gain. Pass
+    /// refresh: true to force a live scrape regardless.
+    /// </summary>
+    public async Task<List<ForumThread>> ListAllThreadsAsync(
+        int nodeId, bool refresh = false, CancellationToken ct = default)
+    {
+        var cacheFile = ThreadCacheFile(nodeId);
+        var cacheAge  = File.Exists(cacheFile)
+            ? (DateTime.UtcNow - File.GetLastWriteTimeUtc(cacheFile))
+            : (TimeSpan?)null;
+
+        if (!refresh && cacheAge is not null && cacheAge < ListingCacheWindow)
+        {
+            var cached = LoadThreadCache(nodeId);
+            if (cached.Count > 0)
+            {
+                _log.Success(
+                    $"Using thread listing from {Math.Max(1, (int)cacheAge.Value.TotalMinutes)} minute(s) ago " +
+                    $"({cached.Count} thread(s)). Use --refresh to re-scrape the forum.");
+                return cached.Values
+                    .OrderBy(t => t.Title, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        var cache = LoadThreadCache(nodeId);
+        var rss   = await FetchRssThreadsAsync(nodeId, ct).ConfigureAwait(false);
+        MergeIntoCache(cache, rss);
+
+        var page1 = await FetchForumPageAsync(nodeId, 1, ct).ConfigureAwait(false);
+        MergeIntoCache(cache, page1.Threads);
+
+        int totalPages = ParseLastPageNumber(page1.Html);
+        if (totalPages > MaxBrowsePages)
+        {
+            _log.Warn($"Listing capped at {MaxBrowsePages} of {totalPages} page(s)");
+            totalPages = MaxBrowsePages;
+        }
+
+        // Sequential on purpose: fetches are paced, so parallel pages buy nothing,
+        // and a sequential loop can bail out the moment Cloudflare turns hostile.
+        if (totalPages > 1)
+        {
+            _log.Info($"Forum has {totalPages} page(s) — scraping the rest");
+            int consecutiveFailures = 0;
+            for (int page = 2; page <= totalPages; page++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var result = await FetchForumPageAsync(nodeId, page, ct).ConfigureAwait(false);
+                if (result.Threads.Count == 0)
+                {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= MaxConsecutiveFailures)
+                    {
+                        _log.Warn(
+                            $"{consecutiveFailures} forum pages in a row failed — Cloudflare is " +
+                            "blocking further requests. This usually clears within 15-30 minutes. " +
+                            "The listing so far has been kept.");
+                        break;
+                    }
+                    continue;
+                }
+                consecutiveFailures = 0;
+                MergeIntoCache(cache, result.Threads);
+            }
+        }
+
+        SaveThreadCache(nodeId, cache);
+        _log.Success($"{cache.Count} thread(s) known for node {nodeId}");
+        return cache.Values
+            .OrderBy(t => t.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Sane upper bound on pages scraped by --browse; a misparsed page nav
+    /// cannot turn the listing into a crawl of thousands of pages.</summary>
+    private const int MaxBrowsePages = 500;
+
+    /// <summary>Consecutive failed page fetches before the scrape gives up - a few in
+    /// a row means a Cloudflare block, not bad luck.</summary>
+    private const int MaxConsecutiveFailures = 3;
+
+    /// <summary>How long a scraped listing counts as fresh before --browse re-scrapes.</summary>
+    private static readonly TimeSpan ListingCacheWindow = TimeSpan.FromHours(12);
+
+    /// <summary>Shared discovery pipeline: thread cache -> RSS -> (maybe) forum scrape,
+    /// returning every match scored, best first.</summary>
+    private async Task<List<(ForumThread Thread, int Score)>> DiscoverScoredThreadsAsync(
+        string  serial,
+        string? gameName,
+        int     nodeId,
+        int     maxPages,
+        string? userQuery,
+        CancellationToken ct)
+    {
         var keywords = !string.IsNullOrWhiteSpace(userQuery)
             ? userQuery.Trim()
             : BuildSearchKeywords(serial, gameName);
@@ -71,7 +202,8 @@ public sealed partial class GbatempService
         var cache = LoadThreadCache(nodeId);
         _log.Debug($"  Thread cache: {cache.Count} known thread(s)");
 
-        // 2. Refresh via RSS — plain HTTP, no Playwright required.
+        // 2. Refresh via RSS — plain HTTP, no Playwright required. Cloudflare usually
+        //    403s it; the page-1 refresh in step 4 then covers the newest threads.
         var rssThreads = await FetchRssThreadsAsync(nodeId, ct).ConfigureAwait(false);
         bool cacheUpdated = MergeIntoCache(cache, rssThreads);
 
@@ -79,14 +211,26 @@ public sealed partial class GbatempService
         var candidates = ScoreAndFilter(cache.Values, serial, gameName, userQuery);
         int bestScore = candidates.Count > 0 ? candidates[0].Score : 0;
 
-        // 4. If nothing confident found, scrape forum pages in parallel via Playwright.
+        // 4. If nothing confident found, scrape forum pages via Playwright.
         if (bestScore < 20)
         {
-            _log.Info($"Cache/RSS miss (best score {bestScore}) — scraping forum pages in parallel");
-            var scraped = await BrowseForumPagesParallelAsync(nodeId, maxPages, ct).ConfigureAwait(false);
+            _log.Info($"Cache/RSS miss (best score {bestScore}) — scraping forum pages");
+            var scraped = await BrowseForumPagesAsync(nodeId, maxPages, ct).ConfigureAwait(false);
             bool added  = MergeIntoCache(cache, scraped);
             cacheUpdated |= added;
             candidates = ScoreAndFilter(cache.Values, serial, gameName, userQuery);
+        }
+        else if (rssThreads.Count == 0)
+        {
+            // RSS did not deliver: pull page 1 through the browser instead. It lists the
+            // most recently active threads, so brand-new posts are not missed even when
+            // the cache already holds a confident match.
+            var page1 = await FetchForumPageAsync(nodeId, 1, ct).ConfigureAwait(false);
+            if (MergeIntoCache(cache, page1.Threads))
+            {
+                cacheUpdated = true;
+                candidates   = ScoreAndFilter(cache.Values, serial, gameName, userQuery);
+            }
         }
 
         // 5. Persist any newly discovered threads for future searches.
@@ -95,24 +239,16 @@ public sealed partial class GbatempService
 
         if (candidates.Count == 0)
         {
-            _log.Warn("No matching threads found");
+            _log.Warn($"No matching threads among {cache.Count} known thread(s)");
             return [];
         }
+
+        _log.Info($"Searched {cache.Count} known GBAtemp thread(s) — {candidates.Count} match(es)");
 
         foreach (var (t, score) in candidates.Take(10))
             _log.Debug($"    score={score,4} {t.Title}");
 
-        int best = candidates[0].Score;
-        var result = candidates
-            .Where(x => x.Score >= best - 10)
-            .Select(x => x.Thread)
-            .ToList();
-
-        _log.Success($"Selected thread: \"{result[0].Title}\" (score {best})");
-        if (result.Count > 1)
-            _log.Info($"  {result.Count - 1} fallback candidate(s) within 10 pts");
-
-        return result;
+        return candidates;
     }
 
     // -------------------------------------------------------------------------
@@ -162,9 +298,9 @@ public sealed partial class GbatempService
         }
         catch (Exception ex)
         {
-            // Non-fatal: the caller falls through to the Playwright scrape, which has the
-            // browser's Cloudflare clearance.
-            _log.Warn($"  RSS fetch failed ({ex.Message}) — will rely on forum scrape");
+            // Non-fatal: the caller refreshes page 1 via the browser or falls through to
+            // the forum scrape, both of which have the browser's Cloudflare clearance.
+            _log.Warn($"  RSS fetch failed ({ex.Message}) — will rely on cache + browser scrape");
             return [];
         }
     }
@@ -317,46 +453,71 @@ public sealed partial class GbatempService
     }
 
     // -------------------------------------------------------------------------
-    // Forum listing pagination via Playwright (parallel, up to 3 concurrent pages)
+    // Forum listing pagination via Playwright (sequential; fetches are paced).
 
-    private async Task<List<ForumThread>> BrowseForumPagesParallelAsync(
+    private async Task<List<ForumThread>> BrowseForumPagesAsync(
         int nodeId, int maxPages, CancellationToken ct)
     {
-        _log.Info($"Browsing GBAtemp forum (node {nodeId}), pages 1–{maxPages} in parallel");
+        _log.Info($"Browsing GBAtemp forum (node {nodeId}), pages 1–{maxPages}");
 
-        var sem   = new SemaphoreSlim(3, 3);
-        var tasks = Enumerable.Range(1, maxPages)
-            .Select(page => FetchForumPageAsync(nodeId, page, sem, ct))
-            .ToArray();
+        // Fetches are paced, so parallel pages buy nothing; a sequential loop can
+        // bail out the moment Cloudflare turns hostile instead of burning timeouts.
+        var all = new List<ForumThread>();
+        int consecutiveFailures = 0;
+        for (int page = 1; page <= maxPages; page++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var result = await FetchForumPageAsync(nodeId, page, ct).ConfigureAwait(false);
+            if (result.Threads.Count == 0)
+            {
+                consecutiveFailures++;
+                if (consecutiveFailures >= MaxConsecutiveFailures)
+                {
+                    _log.Warn($"{consecutiveFailures} forum pages in a row failed — Cloudflare " +
+                              "is blocking further requests; stopping the scrape.");
+                    break;
+                }
+                continue;
+            }
+            consecutiveFailures = 0;
+            all.AddRange(result.Threads);
+        }
 
-        var pages = await Task.WhenAll(tasks).ConfigureAwait(false);
-        var all   = pages.SelectMany(p => p).ToList();
-        _log.Debug($"  Forum scrape total: {all.Count} thread(s) from {maxPages} page(s)");
+        _log.Debug($"  Forum scrape total: {all.Count} thread(s)");
         return all;
     }
 
-    private async Task<List<ForumThread>> FetchForumPageAsync(
-        int nodeId, int page, SemaphoreSlim sem, CancellationToken ct)
+    private async Task<(List<ForumThread> Threads, string Html)> FetchForumPageAsync(
+        int nodeId, int page, CancellationToken ct)
     {
-        await sem.WaitAsync(ct).ConfigureAwait(false);
+        var url = page == 1
+            ? $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/"
+            : $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/page-{page}";
+
+        _log.Debug($"  Loading forum page {page}: {url}");
         try
         {
-            var url = page == 1
-                ? $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/"
-                : $"https://gbatemp.net/forums/pcsx2-hd-texture-pack-group.{nodeId}/page-{page}";
-
-            _log.Debug($"  Loading forum page {page}: {url}");
-            var listing = await _flare.GetPageAsync(url, maxTimeoutMs: 60_000).ConfigureAwait(false);
+            var listing = await _flare.GetPageAsync(url).ConfigureAwait(false);
             var threads = ParseForumListingThreads(listing.Html);
             _log.Debug($"  Page {page}: {threads.Count} thread(s)");
-            return threads;
+            return (threads, listing.Html);
         }
         catch (Exception ex)
         {
             _log.Warn($"  Forum page {page} fetch failed: {ex.Message}");
-            return [];
+            return ([], "");
         }
-        finally { sem.Release(); }
+    }
+
+    /// <summary>Highest page number found in a forum listing's page nav (XenForo's compact
+    /// nav always links the last page). Defaults to 1 when no pagination is present.</summary>
+    private static int ParseLastPageNumber(string html)
+    {
+        int last = 1;
+        foreach (Match m in PageNumberRx().Matches(html))
+            if (int.TryParse(m.Groups[1].Value, out var n) && n > last)
+                last = n;
+        return last;
     }
 
     private static List<ForumThread> ParseForumListingThreads(string html)
@@ -405,6 +566,7 @@ public sealed partial class GbatempService
     public async Task<List<DownloadLink>> GetDownloadLinksAsync(
         string            threadUrl,
         ForumThread?      thread   = null,
+        bool              dumpMissingHtml = true,
         CancellationToken ct       = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -489,7 +651,8 @@ public sealed partial class GbatempService
         if (links.Count == 0)
         {
             _log.Warn("No download links found in any post");
-            DumpMissingLinksHtml(threadUrl, thread, html);
+            if (dumpMissingHtml)
+                DumpMissingLinksHtml(threadUrl, thread, html);
         }
         else _log.Success($"Found {links.Count} download link(s): " + string.Join(", ", links.Select(l => l.Host)));
 
@@ -654,6 +817,10 @@ public sealed partial class GbatempService
     // Thread URL slug and ID from an RSS <link> or forum href
     [GeneratedRegex(@"/threads/([A-Za-z0-9\-_.]+)\.(\d+)/")]
     private static partial Regex ThreadUrlRx();
+
+    // Page numbers in a forum listing's page nav (hrefs like "/page-12").
+    [GeneratedRegex(@"/page-(\d+)")]
+    private static partial Regex PageNumberRx();
 
     [GeneratedRegex(@"https?://mega\.nz/(?:file|folder)/[A-Za-z0-9#!_\-]+")]
     private static partial Regex MegaRx();
